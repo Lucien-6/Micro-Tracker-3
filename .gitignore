@@ -5,9 +5,16 @@
 # Session data
 .history
 
-# Model weights (large files — not tracked)
-model_weights/*
+# Model weights (local only — never commit checkpoint files)
+model_weights/**
 !model_weights/.gitkeep
+
+# Common weight extensions anywhere under model_weights (redundant safety)
+model_weights/**/*.pt
+model_weights/**/*.pth
+model_weights/**/*.ckpt
+model_weights/**/*.safetensors
+model_weights/**/*.bin
 
 # Python
 __pycache__/
