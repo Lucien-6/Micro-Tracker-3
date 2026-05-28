@@ -4,9 +4,9 @@
 
 Micro Tracker 3 is a desktop application for annotating targets in video frames and propagating instance masks through time using Meta's **Segment Anything Model (SAM)** video-tracking pipeline. It is designed for workflows where classical thresholding is unreliable—such as **microbial motility**, particle tracking, or any scene requiring prompt-based segmentation—while exporting analysis-ready **8-bit label image sequences**.
 
-Built on a bundled [muggled_sam](https://github.com/heyoeyo/muggled_sam) inference stack (SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
+Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_sam](https://github.com/heyoeyo/muggled_sam); SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.2.0](CHANGELOG.md) (2026-05-28) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.3.0](CHANGELOG.md) (2026-05-28) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -103,6 +103,8 @@ Launch the application (video can be selected inside the GUI):
 ```bash
 python main.py
 ```
+
+Run from the repository root so the `src/` package resolves. If you extend the project, import modules as `from src.make_sam import ...` (not `muggled_sam`).
 
 Or specify resources on the command line:
 
@@ -228,13 +230,13 @@ This format is compatible with common downstream tools (ImageJ, TrackMate, custo
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.2.0)
+├── VERSION                   # Current release (1.3.0)
 ├── CHANGELOG.md
 ├── docs/
 │   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)
 ├── LICENSE
 ├── model_weights/            # Place SAM checkpoints here
-└── muggled_sam/
+└── src/
     ├── make_sam.py           # Weight loader & version detection
     ├── v2_sam/               # SAM 2 implementation
     ├── v3_sam/               # SAM 3 implementation
@@ -253,8 +255,8 @@ micro-tracker-3/
 Micro Tracker 3 has three layers:
 
 1. **Application (`main.py`)** — Main loop, state machine (paused / tracking / scrubbing), multi-object scheduling, recording, and resource switching.
-2. **Demo helpers (`muggled_sam/demo_helpers/`)** — Reusable OpenCV UI, `SAMVideoMemoryBank`, file dialogs, and TIF export.
-3. **Model stack (`muggled_sam/`)** — Pure-PyTorch SAM with two runtime contexts:
+2. **Demo helpers (`src/demo_helpers/`)** — Reusable OpenCV UI, `SAMVideoMemoryBank`, file dialogs, and TIF export.
+3. **Model stack (`src/`)** — Pure-PyTorch SAM with two runtime contexts:
    - **Interactive context** — `encode_image`, `encode_prompts`, `generate_masks` (single-frame segmentation)
    - **Tracking context** — `encode_prompt_memory`, `step_video_masking`, `encode_frame_memory` (video propagation)
 

@@ -5,12 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-05-28
+
+### Changed
+
+- **Package layout** — Renamed directory `muggled_sam/` to `src/`. Application imports are now `from src...` (e.g. `from src.make_sam import make_sam_from_state_dict`). Forks or scripts that imported `muggled_sam` must update paths accordingly.
+- Added `src/__init__.py` to mark the inference/UI package root.
+
 ## [1.2.0] - 2026-05-28
 
 ### Added
 
-- **In-app user guide (tkinter)** — Press **H** to open a scrollable, non-modal guide with **English / 中文** switching (`muggled_sam/demo_helpers/ui/user_guide_window.py`).
-- **F1 shortcuts panel** — Subtitle now references **H** (user guide) and **F1** (keyboard shortcuts).
+- **In-app user guide (tkinter)** — Press **H** to open a scrollable, non-modal guide with **English / 中文** switching (`src/demo_helpers/ui/user_guide_window.py` after 1.3.0; was `muggled_sam/...` in 1.2.0).
+- **F1 shortcuts panel** — Subtitle references **H** (user guide) and **F1** (keyboard shortcuts).
 
 ### Fixed
 
@@ -34,7 +41,7 @@ First stable release of **Micro Tracker 3**.
 
 ### Added
 
-- Interactive video segmentation and tracking GUI built on SAM 2 / SAM 3 / SAM 3.1 (`muggled_sam`)
+- Interactive video segmentation and tracking GUI built on SAM 2 / SAM 3 / SAM 3.1 (`muggled_sam` inference bundle)
 - Multi-object tracking with up to 32 independent object slots
 - Prompt tools: hover preview, bounding box, foreground/background points
 - Per-object prompt memory and temporal frame memory banks
@@ -51,6 +58,7 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.3.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.3.0
 [1.2.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.2.0
 [1.1.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.1.0
 [1.0.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.0.0

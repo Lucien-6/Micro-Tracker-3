@@ -34,7 +34,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "and export 8-bit label image sequences for analysis in ImageJ, TrackMate, MATLAB, or Python.",
                 _bullets(
                     "Up to 32 independent object slots",
-                    "SAM 2 / SAM 3 / SAM 3.1 weights via the bundled muggled_sam stack",
+                    "SAM 2 / SAM 3 / SAM 3.1 weights via the bundled src/ inference stack",
                     "CUDA, Apple MPS, or CPU inference",
                 ),
             ),
@@ -179,7 +179,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "并导出 8 位灰度标签序列，供 ImageJ、TrackMate、MATLAB 或 Python 后续分析。",
                 _bullets(
                     "最多 32 个独立对象槽位",
-                    "通过内置 muggled_sam 支持 SAM 2 / SAM 3 / SAM 3.1 权重",
+                    "通过内置 src/ 推理代码支持 SAM 2 / SAM 3 / SAM 3.1 权重",
                     "支持 CUDA、Apple MPS 或 CPU 推理",
                 ),
             ),

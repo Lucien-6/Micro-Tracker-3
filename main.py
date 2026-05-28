@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -22,27 +22,27 @@ import torch
 import cv2
 import numpy as np
 
-from muggled_sam.make_sam import make_sam_from_state_dict
+from src.make_sam import make_sam_from_state_dict
 
-from muggled_sam.demo_helpers.ui.window import DisplayWindow, KEY
-from muggled_sam.demo_helpers.ui.shortcuts_help import ShortcutsHelpWindow
-from muggled_sam.demo_helpers.ui.user_guide_window import UserGuideWindow
-from muggled_sam.demo_helpers.ui.video import (
+from src.demo_helpers.ui.window import DisplayWindow, KEY
+from src.demo_helpers.ui.shortcuts_help import ShortcutsHelpWindow
+from src.demo_helpers.ui.user_guide_window import UserGuideWindow
+from src.demo_helpers.ui.video import (
     ReversibleLoopingVideoReader,
     LoopingVideoPlaybackSlider,
     ValueChangeTracker,
 )
-from muggled_sam.demo_helpers.ui.layout import GridStack, HStack, VStack
-from muggled_sam.demo_helpers.ui.buttons import ToggleButton, ImmediateButton, RadioConstraint
-from muggled_sam.demo_helpers.ui.text import ValueBlock
-from muggled_sam.demo_helpers.ui.base import force_same_min_width
-from muggled_sam.demo_helpers.ui.overlays import DrawPolygonsOverlay, MiddleClickCaptureOverlay
-from muggled_sam.demo_helpers.ui.helpers.images import linear_gradient_image
+from src.demo_helpers.ui.layout import GridStack, HStack, VStack
+from src.demo_helpers.ui.buttons import ToggleButton, ImmediateButton, RadioConstraint
+from src.demo_helpers.ui.text import ValueBlock
+from src.demo_helpers.ui.base import force_same_min_width
+from src.demo_helpers.ui.overlays import DrawPolygonsOverlay, MiddleClickCaptureOverlay
+from src.demo_helpers.ui.helpers.images import linear_gradient_image
 
-from muggled_sam.demo_helpers.shared_ui_layout import PromptUIControl, PromptUI
+from src.demo_helpers.shared_ui_layout import PromptUIControl, PromptUI
 
-from muggled_sam.demo_helpers.history_keeper import HistoryKeeper
-from muggled_sam.demo_helpers.loading import (
+from src.demo_helpers.history_keeper import HistoryKeeper
+from src.demo_helpers.loading import (
     clean_path_str,
     resolve_default_model_path,
     pick_model_file,
@@ -50,16 +50,16 @@ from muggled_sam.demo_helpers.loading import (
     pick_save_folder,
     ask_save_unsaved_results,
 )
-from muggled_sam.demo_helpers.prompts import check_have_prompts
-from muggled_sam.demo_helpers.contours import get_contours_from_mask
-from muggled_sam.demo_helpers.video_data_storage import SAMVideoMemoryBank
-from muggled_sam.demo_helpers.saving import (
+from src.demo_helpers.prompts import check_have_prompts
+from src.demo_helpers.contours import get_contours_from_mask
+from src.demo_helpers.video_data_storage import SAMVideoMemoryBank
+from src.demo_helpers.saving import (
     build_combined_label_image,
     make_mt_results_folder_name,
     save_tracking_label_tif_sequence,
 )
-from muggled_sam.demo_helpers.misc import PeriodicVRAMReport, make_device_config, get_default_device_string
-from muggled_sam.demo_helpers.model_info import get_token_hw, get_preencoding_hw
+from src.demo_helpers.misc import PeriodicVRAMReport, make_device_config, get_default_device_string
+from src.demo_helpers.model_info import get_token_hw, get_preencoding_hw
 
 
 # ---------------------------------------------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.2.0  
+**Version:** 1.3.0  
 **Last updated:** 2026-05-28  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
@@ -17,6 +17,8 @@ Micro Tracker 3 is an interactive desktop tool for:
 3. Exporting combined **8-bit label TIF** sequences for downstream analysis (ImageJ, TrackMate, custom pipelines).
 
 The app supports up to **32 object slots**, each with its own prompt memory and optional frame history.
+
+**Code layout (v1.3.0+):** SAM inference and UI helpers live under `src/` (formerly `muggled_sam/`). Run `python main.py` from the repository root; extend the app with `from src...` imports.
 
 ---
 
