@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-05-28
+
+### Added
+
+- **In-app user guide (tkinter)** — Press **H** to open a scrollable, non-modal guide with **English / 中文** switching (`muggled_sam/demo_helpers/ui/user_guide_window.py`).
+- **F1 shortcuts panel** — Subtitle now references **H** (user guide) and **F1** (keyboard shortcuts).
+
+### Fixed
+
+- **Windows GIL crash** when pressing **H** during `cv2.waitKeyEx` — Guide toggle is deferred to the main loop (`request_toggle` + `process_events` after `DisplayWindow.show()`).
+
 ## [1.1.0] - 2026-05-28
 
 ### Changed
@@ -15,8 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `docs/USER_GUIDE.md` — Standalone user guide (workflow, lost-target behavior, CLI reference)
-- F1 shortcuts panel section **Tracking & Loss** (in-app help)
+- `docs/USER_GUIDE.md` — Markdown user guide (workflow, lost-target behavior, CLI reference)
 
 ## [1.0.0] - 2026-05-28
 
@@ -41,5 +51,6 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.2.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.2.0
 [1.1.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.1.0
 [1.0.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.0.0

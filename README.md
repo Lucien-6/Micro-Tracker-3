@@ -6,7 +6,7 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled [muggled_sam](https://github.com/heyoeyo/muggled_sam) inference stack (SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.1.0](CHANGELOG.md) (2026-05-28) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.2.0](CHANGELOG.md) (2026-05-28) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -22,6 +22,7 @@ Built on a bundled [muggled_sam](https://github.com/heyoeyo/muggled_sam) inferen
 | **Export** | Combined per-frame label masks as `00001.tif`, `00002.tif`, … |
 | **Models** | Auto-detects SAM 2, SAM 3, or SAM 3.1 weights (`.pt` / `.pth`) |
 | **Hardware** | CUDA, Apple MPS, or CPU; default bfloat16 for lower VRAM use |
+| **Help** | **H** — tkinter user guide (English / 中文); **F1** — keyboard shortcuts panel |
 
 ---
 
@@ -162,6 +163,7 @@ Press **F1** inside the app for the full in-GUI reference. Summary:
 | `+` / `-` | Add / remove object slot |
 | `[` / `]` | Zoom display out / in |
 | Middle-click | Select object under cursor (tracked masks) |
+| `H` | Toggle user guide (tkinter, English / 中文) |
 | `F1` | Toggle shortcuts panel |
 | `Q` / `Esc` | Quit (prompts to save unsaved results) |
 
@@ -226,10 +228,10 @@ This format is compatible with common downstream tools (ImageJ, TrackMate, custo
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.1.0)
+├── VERSION                   # Current release (1.2.0)
 ├── CHANGELOG.md
 ├── docs/
-│   └── USER_GUIDE.md         # User guide (workflow, loss handling, CLI)
+│   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)
 ├── LICENSE
 ├── model_weights/            # Place SAM checkpoints here
 └── muggled_sam/
@@ -241,7 +243,7 @@ micro-tracker-3/
         ├── shared_ui_layout.py
         ├── video_data_storage.py
         ├── saving.py
-        └── ui/               # OpenCV widget toolkit
+        └── ui/               # OpenCV widget toolkit, F1 shortcuts, H-key user guide (tkinter)
 ```
 
 ---
@@ -258,7 +260,7 @@ Micro Tracker 3 has three layers:
 
 Each object slot maintains its own prompt memory (up to 32 entries), frame memory deque (default depth 6, configurable via `--max_memories`), and an optional **tracking stop frame index** when a target is lost in default mode.
 
-Press **F1** for in-app keyboard shortcuts (includes a **Tracking & Loss** section).
+Press **H** for the in-app user guide (English / 中文) or **F1** for keyboard shortcuts.
 
 ---
 

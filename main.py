@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -26,6 +26,7 @@ from muggled_sam.make_sam import make_sam_from_state_dict
 
 from muggled_sam.demo_helpers.ui.window import DisplayWindow, KEY
 from muggled_sam.demo_helpers.ui.shortcuts_help import ShortcutsHelpWindow
+from muggled_sam.demo_helpers.ui.user_guide_window import UserGuideWindow
 from muggled_sam.demo_helpers.ui.video import (
     ReversibleLoopingVideoReader,
     LoopingVideoPlaybackSlider,
@@ -936,6 +937,9 @@ obj_mgr.bind_window(window)
 shortcuts_help = ShortcutsHelpWindow(offset_xy=(60, 60))
 shortcuts_help.attach_f1_toggle(window)
 
+user_guide = UserGuideWindow(__app_name__, __version__, __author__, __author_email__, initial_lang="zh")
+user_guide.attach_h_toggle(window)
+
 # Change tools on left/right arrow keys; change objects on up/down arrow keys
 uictrl.attach_arrowkey_callbacks(window)
 if has_video_source:
@@ -1395,6 +1399,7 @@ try:
         # Display final image
         display_image = obj_mgr.disp_layout.render(**render_limit_dict)
         req_break, keypress = window.show(display_image, None if is_paused else 1)
+        user_guide.process_events(window)
         if req_break:
             if not handle_close_request(obj_mgr, video_path, window):
                 continue
@@ -1454,6 +1459,7 @@ try:
                 )
                 display_image = obj_mgr.disp_layout.render(**render_limit_dict)
                 req_break, keypress = window.show(display_image, None)
+                user_guide.process_events(window)
                 if playback_slider is not None:
                     playback_slider.update(frame_idx)
 
@@ -1497,6 +1503,7 @@ except KeyboardInterrupt:
 finally:
     # Clean up resources
     shortcuts_help.close()
+    user_guide.close()
     cv2.destroyAllWindows()
     if vreader is not None:
         vreader.release()

@@ -1,10 +1,10 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.1.0  
+**Version:** 1.2.0  
 **Last updated:** 2026-05-28  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
-This guide describes day-to-day use of Micro Tracker 3. For installation and repository layout, see [README.md](../README.md).
+This document mirrors the in-app guide (press **H** while the main window is focused; switch **English / 中文** in the guide window). For installation and repository layout, see [README.md](../README.md).
 
 ---
 
@@ -150,7 +150,9 @@ python main.py [OPTIONS]
                               Retain frame history when adding new prompts
 ```
 
-Press **F1** in the app for the keyboard shortcuts panel.
+**In-app (recommended):** Press **H** for the tkinter user guide (English / 中文, non-modal).  
+**This file:** Markdown copy for offline reading or printing.  
+**Shortcuts:** Press **F1** for the keyboard and mouse reference panel (OpenCV window).
 
 ---
 
