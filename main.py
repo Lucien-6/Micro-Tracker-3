@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -130,7 +130,12 @@ parser.add_argument(
     "--keep_bad_objscores",
     default=False,
     action="store_true",
-    help="If set, masks associated with low object-scores will NOT be discarded",
+    help=(
+        "If set, keep running video masking after a low object-score (lost target); "
+        "masks are still zeroed on low-score frames. Default: stop inference from the "
+        "first low-score frame onward until the playhead moves before that frame or "
+        "new prompts are stored"
+    ),
 )
 parser.add_argument(
     "--keep_history_on_new_prompts",
@@ -154,7 +159,7 @@ use_float32 = args.use_float32
 use_square_sizing = not args.use_aspect_ratio
 imgenc_base_size = args.base_size_px
 max_memory_history = args.max_memories
-discard_on_bad_objscore = not args.keep_bad_objscores
+keep_tracking_after_loss = args.keep_bad_objscores
 clear_history_on_new_prompts = not args.keep_history_on_new_prompts
 object_score_threshold = args.objscore_threshold
 
@@ -389,35 +394,75 @@ def clear_hover_preview_mask(obj_mgr, objidx: int, track_idx_keeper) -> None:
         track_idx_keeper.clear()
 
 
+def apply_zero_tracking_mask(obj_mgr, objidx: int) -> None:
+    """Zero the display mask for an object without running video masking."""
+    maskresult = obj_mgr.maskresults_list[objidx]
+    zero_preds = maskresult.preds * 0.0
+    obj_mgr.maskresults_list[objidx].update(zero_preds, maskresult.idx, maskresult.objscore)
+
+
+def track_single_object_at_frame(
+    objidx: int,
+    frame_idx: int,
+    obj_mgr,
+    track_model,
+    encoded_img,
+    object_score_threshold: float,
+    keep_tracking_after_loss: bool,
+    is_trackhistory_enabled: bool,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, float | None]:
+    """Run video masking for one object slot, or zero its mask if tracking is stopped at this frame."""
+    memory = obj_mgr.memory_list[objidx]
+    if not memory.check_has_prompts():
+        return None, None, None
+
+    memory.reconcile_tracking_stop_frame(frame_idx)
+    if not memory.should_run_video_masking(frame_idx, keep_tracking_after_loss):
+        apply_zero_tracking_mask(obj_mgr, objidx)
+        return None, None, None
+
+    mask_preds, iou_preds, obj_ptr, obj_score = track_model.step_video_masking(
+        encoded_img, **memory.to_dict(), return_best_only=False
+    )
+    best_mask_idx = iou_preds.argmax(dim=-1)
+    obj_score_float = float(obj_score)
+    tracked_mask_idx = get_best_mask_index(iou_preds)
+
+    if obj_score_float < object_score_threshold:
+        mask_preds = mask_preds * 0.0
+        if not keep_tracking_after_loss:
+            memory.set_tracking_stop_frame(frame_idx)
+    elif is_trackhistory_enabled:
+        mem_enc = track_model.encode_frame_memory(
+            encoded_img, mask_preds, obj_ptr, obj_score, mask_index=best_mask_idx
+        )
+        memory.store_frame_result(mem_enc)
+
+    obj_mgr.maskresults_list[objidx].update(mask_preds, tracked_mask_idx, obj_score_float)
+    return mask_preds, iou_preds, obj_score_float
+
+
 def run_multi_object_tracking(
     obj_mgr,
     track_model,
     encoded_img,
+    frame_idx: int,
     object_score_threshold,
-    discard_on_bad_objscore,
+    keep_tracking_after_loss,
     is_trackhistory_enabled,
 ) -> None:
     """Run video masking for every object that has stored prompts."""
     for objidx in obj_mgr.objiter:
-        if not obj_mgr.memory_list[objidx].check_has_prompts():
-            continue
-
-        mask_preds, iou_preds, obj_ptr, obj_score = track_model.step_video_masking(
-            encoded_img, **obj_mgr.memory_list[objidx].to_dict(), return_best_only=False
+        track_single_object_at_frame(
+            objidx,
+            frame_idx,
+            obj_mgr,
+            track_model,
+            encoded_img,
+            object_score_threshold,
+            keep_tracking_after_loss,
+            is_trackhistory_enabled,
         )
-        best_mask_idx = iou_preds.argmax(dim=-1)
-        obj_score_float = float(obj_score)
-        tracked_mask_idx = get_best_mask_index(iou_preds)
-
-        if obj_score_float < object_score_threshold and discard_on_bad_objscore:
-            mask_preds = mask_preds * 0.0
-        elif is_trackhistory_enabled:
-            mem_enc = track_model.encode_frame_memory(
-                encoded_img, mask_preds, obj_ptr, obj_score, mask_index=best_mask_idx
-            )
-            obj_mgr.memory_list[objidx].store_frame_result(mem_enc)
-
-        obj_mgr.maskresults_list[objidx].update(mask_preds, tracked_mask_idx, obj_score_float)
 
 
 def collect_mask_contours(obj_mgr, buffer_select_idx, uictrl, preencode_hw):
@@ -1168,8 +1213,9 @@ try:
                 obj_mgr,
                 track_model,
                 encoded_img,
+                frame_idx,
                 object_score_threshold,
-                discard_on_bad_objscore,
+                keep_tracking_after_loss,
                 is_trackhistory_enabled,
             )
             track_idx_keeper.record(frame_idx)
@@ -1285,23 +1331,38 @@ try:
                 and is_changed_track_idx
                 and not scrub_just_released
             ):
-                selected_memory_dict = obj_mgr.memory_list[buffer_select_idx].to_dict()
-                paused_mask_preds, iou_preds, _, paused_obj_score = track_model.step_video_masking(
-                    encoded_img, **selected_memory_dict, return_best_only=False
+                paused_mask_preds, iou_preds, paused_obj_score = track_single_object_at_frame(
+                    buffer_select_idx,
+                    frame_idx,
+                    obj_mgr,
+                    track_model,
+                    encoded_img,
+                    object_score_threshold,
+                    keep_tracking_after_loss,
+                    is_trackhistory_enabled,
                 )
-                paused_obj_score = float(paused_obj_score.squeeze().float().cpu().numpy())
                 track_idx_keeper.record(frame_idx)
 
-            # Store encoded prompts as needed
+            # Store encoded prompts as needed (requires new FG/BG points or a box, not hover-only on tracked objects)
             if store_prompt_btn.read():
-                _, init_mem = track_model.encode_prompt_memory(
-                    encoded_img,
-                    *prompts,
-                    mask_index=None,
-                )
-                obj_mgr.memory_list[buffer_select_idx].store_prompt_result(init_mem)
-                ui_elems.clear_prompts()
-                track_idx_keeper.clear()
+                if not interactive_user_prompts:
+                    print(
+                        "",
+                        "Store Prompt ignored: add new foreground/background points or a box on the current frame first.",
+                        sep="\n",
+                        flush=True,
+                    )
+                else:
+                    _, init_mem = track_model.encode_prompt_memory(
+                        encoded_img,
+                        *prompts,
+                        mask_index=None,
+                    )
+                    selected_memory = obj_mgr.memory_list[buffer_select_idx]
+                    selected_memory.store_prompt_result(init_mem)
+                    selected_memory.clear_tracking_stop_frame()
+                    ui_elems.clear_prompts()
+                    track_idx_keeper.clear()
 
             # Store user-interaction results for selected object while paused
             if paused_mask_preds is not None:
@@ -1317,8 +1378,9 @@ try:
                     obj_mgr,
                     track_model,
                     encoded_img,
+                    frame_idx,
                     object_score_threshold,
-                    discard_on_bad_objscore,
+                    keep_tracking_after_loss,
                     is_trackhistory_enabled,
                 )
 
@@ -1374,8 +1436,9 @@ try:
                         obj_mgr,
                         track_model,
                         encoded_img,
+                        frame_idx,
                         object_score_threshold,
-                        discard_on_bad_objscore,
+                        keep_tracking_after_loss,
                         is_trackhistory_enabled,
                     )
                 else:

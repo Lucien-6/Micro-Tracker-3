@@ -1,3 +1,6 @@
+# Micro Tracker 3 v1.1.0 (2026-05-28)
+# Install PyTorch first from https://pytorch.org/get-started/locally/
+
 opencv-python   >=4.5, <4.14
 numpy           >=1.21, <2.5
 torch           >=2.1, <2.12

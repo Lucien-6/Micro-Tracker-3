@@ -6,7 +6,7 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled [muggled_sam](https://github.com/heyoeyo/muggled_sam) inference stack (SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.0.0](CHANGELOG.md) · **Author:** Lucien · **License:** [MIT](LICENSE)
+**Current version:** [1.1.0](CHANGELOG.md) (2026-05-28) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -16,6 +16,7 @@ Built on a bundled [muggled_sam](https://github.com/heyoeyo/muggled_sam) inferen
 |----------|------------|
 | **Segmentation** | Point, box, and hover-based prompts with live mask preview |
 | **Tracking** | Temporal propagation via SAM memory encoder (prompt + frame history) |
+| **Lost-target policy** | Per-object stop on low object score (default); optional continued inference via `--keep_bad_objscores` |
 | **Multi-object** | Up to 32 independent object slots, each with its own memory bank |
 | **Playback** | Pause, play, reverse, frame stepping, and timeline scrubbing |
 | **Export** | Combined per-frame label masks as `00001.tif`, `00002.tif`, … |
@@ -136,8 +137,8 @@ On first run, the app resolves the model from (in order):
 2. **Select an object slot** — `Object 1`, `Object 2`, … (Up/Down or W/S). Add slots with **+**.
 3. **Pause the video** — Space bar.
 4. **Annotate** — Choose Hover, Box, FG Point, or BG Point; place prompts on the target.
-5. **Store Prompt** — Click **Store Prompt** or press **Tab** to write prompts into the tracker's memory bank.
-6. **Track** — Press **Track** or Space to play forward; masks propagate automatically each frame.
+5. **Store Prompt** — Click **Store Prompt** or press **Tab** (requires FG/BG points or a box on the current frame; see [user guide](docs/USER_GUIDE.md)).
+6. **Track** — Press **Track** or Space to play forward; masks propagate automatically each frame. If a target is lost (low object score), tracking for that object stops by default until you move to an earlier frame or store new prompts.
 7. **Record** — Enable **Enable Recording** to buffer label frames in memory.
 8. **Export** — Click **Save Results** to write a TIF sequence to disk.
 
@@ -179,11 +180,13 @@ python main.py [OPTIONS]
   -ar, --use_aspect_ratio     Keep original aspect ratio (default: square pad)
   -f32, --use_float32         Use float32 instead of bfloat16
   --max_memories N            Frame memory history length (default: 6)
-  --objscore_threshold F      Object score below which target is treated as lost
-  --keep_bad_objscores        Do not discard masks with low object scores
+  --objscore_threshold F      Object score below which target is treated as lost (default: 0.0)
+  --keep_bad_objscores        Keep inferencing after loss; masks still zeroed on low-score frames
   --keep_history_on_new_prompts
                               Retain frame history when adding new prompts
 ```
+
+**Lost target (default):** On the first low-score frame, the app masks once, zeros the mask, and stops further inference for that object on that frame and later frames. Move the playhead before the loss frame or add new points/box and **Store Prompt** to resume. See [docs/USER_GUIDE.md](docs/USER_GUIDE.md#5-lost-targets-out-of-frame-defocus-occlusion).
 
 Example — CPU inference with aspect-ratio-preserving encoding:
 
@@ -223,8 +226,10 @@ This format is compatible with common downstream tools (ImageJ, TrackMate, custo
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.0.0)
+├── VERSION                   # Current release (1.1.0)
 ├── CHANGELOG.md
+├── docs/
+│   └── USER_GUIDE.md         # User guide (workflow, loss handling, CLI)
 ├── LICENSE
 ├── model_weights/            # Place SAM checkpoints here
 └── muggled_sam/
@@ -251,17 +256,21 @@ Micro Tracker 3 has three layers:
    - **Interactive context** — `encode_image`, `encode_prompts`, `generate_masks` (single-frame segmentation)
    - **Tracking context** — `encode_prompt_memory`, `step_video_masking`, `encode_frame_memory` (video propagation)
 
-Each object slot maintains its own prompt memory (up to 32 entries) and frame memory deque (default depth 6, configurable via `--max_memories`).
+Each object slot maintains its own prompt memory (up to 32 entries), frame memory deque (default depth 6, configurable via `--max_memories`), and an optional **tracking stop frame index** when a target is lost in default mode.
+
+Press **F1** for in-app keyboard shortcuts (includes a **Tracking & Loss** section).
 
 ---
 
 ## Tips for microscopy video
 
+See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for full detail. Summary:
+
 - **Pause before annotating** — Prompt tools are disabled during playback.
 - **Use FG/BG points** on irregular cell shapes; boxes work well for round cells.
-- **Store Prompt on a clear frame** — Avoid motion blur when possible.
+- **Store Prompt on a clear frame** — Requires interactive points or a box; avoid hover-only on tracked objects.
 - **Enable History** — Keeps temporal context; disable if drift accumulates, then re-store prompts.
-- **Re-store prompts** if the target is lost (`object score` drops); adjust `--objscore_threshold` as needed.
+- **Lost target** — Default: stop inference from the loss frame onward (mask zeroed). Scrub earlier or re-store prompts to resume; use `--keep_bad_objscores` for continuous inference.
 - **Smaller `-b`** values reduce VRAM and speed up encoding but may lose fine detail.
 
 ---

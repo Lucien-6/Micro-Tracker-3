@@ -63,6 +63,16 @@ SHORTCUT_SECTIONS = (
         ),
     ),
     (
+        "Tracking & Loss",
+        (165, 95, 125),
+        (
+            ("Store Prompt", "Requires FG/BG points or box (see guide)"),
+            ("Lost (default)", "Stops inference after low object score"),
+            ("Playhead back", "Before loss frame: tracking can resume"),
+            ("--keep_bad_objscores", "CLI: keep inferencing after loss"),
+        ),
+    ),
+    (
         "View & System",
         (130, 95, 165),
         (
@@ -139,7 +149,9 @@ def _render_shortcuts_panel() -> np.ndarray:
 
     header_roi = img[header_top:header_bottom, header_pad_x : panel_w - header_pad_x]
     title_drawer.xy_norm(header_roi, "Keyboard Shortcuts", (0.5, 0.36))
-    subtitle_drawer.xy_norm(header_roi, "Micro Tracker 3  |  Press F1 to toggle  |  Non-modal reference", (0.5, 0.78))
+    subtitle_drawer.xy_norm(
+        header_roi, "Micro Tracker 3 v1.1.0  |  Press F1 to toggle  |  docs/USER_GUIDE.md", (0.5, 0.78)
+    )
 
     y = header_bottom + 10
     desc_x = margin_x + key_col_w + 10
