@@ -115,6 +115,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "With 33 or more objects, the list keeps the same button row height as at 32 objects.",
                 "Scroll the grid with the mouse wheel. Enable Recording and Add/Remove / Save/Clear stay fixed outside the scroll area.",
                 "When you change the active object (sidebar, W/S, arrows, or middle-click on a mask), the list scrolls to keep that slot visible.",
+                "Click and hover on Object N buttons match the visible labels (including after scroll).",
             ),
         ),
         GuideSection(
@@ -270,6 +271,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "超过 32 个对象时，列表行高与 32 个对象时一致，不再被压扁。",
                 "在对象网格上滚动鼠标滚轮浏览；Enable Recording 与 Add/Remove、Save/Clear 固定在列表外。",
                 "切换当前对象（侧栏、W/S、方向键或中键点选掩膜）时，列表会自动滚到该槽位。",
+                "Object N 按钮的点击与悬停区域与可见标签一致（滚动后亦同）。",
             ),
         ),
         GuideSection(

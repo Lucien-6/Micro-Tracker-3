@@ -1,6 +1,6 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.4.0  
+**Version:** 1.4.1  
 **Last updated:** 2026-05-29  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
@@ -117,6 +117,8 @@ Adjust sensitivity with `--objscore_threshold` (higher = stricter “lost” det
 | **Selection** | The **active** object scrolls into view when you pick a slot (sidebar click, **W** / **S**, **↑** / **↓**, or middle-click on a tracked mask). |
 
 Add slots with **+** or **Add Object**; remove with **-** or **Remove Object** (at least one slot always remains).
+
+Click targets are kept in sync with the visible buttons after each UI redraw and when you scroll the list (v1.4.1+).
 
 ---
 

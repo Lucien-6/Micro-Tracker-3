@@ -298,6 +298,8 @@ class VStack(BaseCallback):
             x1, y1 = x_stack + lpad, y_stack + tpad
             x2, y2 = x1 + orig_frame_w, y1 + orig_frame_h
             child._cb_region.update(x1, y1, x2, y2)
+            if hasattr(child, "finalize_callback_regions"):
+                child.finalize_callback_regions()
 
             # Update stacking point for next child
             y_stack = y2
@@ -714,6 +716,7 @@ class ScrollableGridViewport(BaseCallback):
         self._scroll_threshold = scroll_when_more_than
         self._reference_viewport_h = max(0, int(reference_viewport_h))
         self._scroll_y_px = 0
+        self._content_rel_regions: list[tuple[int, int, int, int]] = []
         self.append_children(grid)
         self._sync_render_limits()
 
@@ -779,6 +782,7 @@ class ScrollableGridViewport(BaseCallback):
         # Standard wheel notch is 120; scroll roughly one row per notch
         row_step = self._row_height_px()
         self._scroll_y_px = int(np.clip(self._scroll_y_px - (delta / 120.0) * row_step, 0, self._max_scroll_px()))
+        self._apply_grid_callback_regions()
 
     # .................................................................................................................
 
@@ -803,36 +807,102 @@ class ScrollableGridViewport(BaseCallback):
             self._scroll_y_px = row_bottom - viewport_h
 
         self._scroll_y_px = int(np.clip(self._scroll_y_px, 0, self._max_scroll_px()))
+        self._apply_grid_callback_regions()
 
     # .................................................................................................................
 
-    def _shift_child_callback_regions(self, scroll_y_px: int, viewport_h: int):
-        """Map grid callback regions from full content coordinates into the visible viewport."""
+    def _capture_content_relative_regions(self, origin_x: int, origin_y: int):
+        """Store button regions relative to the grid origin (parent position during render)."""
 
-        ox, oy = self._cb_region.x1, self._cb_region.y1
+        rel_regions = []
+        for child in self._grid:
+            rel_regions.append(
+                (
+                    child._cb_region.x1 - origin_x,
+                    child._cb_region.y1 - origin_y,
+                    child._cb_region.x2 - origin_x,
+                    child._cb_region.y2 - origin_y,
+                )
+            )
+        self._content_rel_regions = rel_regions
+
+    # .................................................................................................................
+
+    def _resolve_screen_origin(self) -> tuple[int, int]:
+        """
+        Top-left screen position of this viewport within the laid-out window.
+        Parent stacks assign their own region after children render, so walk prior
+        siblings once the layout pass has finished updating callback regions.
+        """
+
+        parent = self._cb_parent_list[-1] if self._cb_parent_list else None
+        if parent is None:
+            return self._cb_region.x1, self._cb_region.y1
+
+        oy = parent._cb_region.y1
+        ox = parent._cb_region.x1
+        for sibling in parent:
+            if sibling is self:
+                if self._cb_region.x2 > self._cb_region.x1:
+                    ox = self._cb_region.x1
+                return ox, oy
+            oy = sibling._cb_region.y2
+
+        return self._cb_region.x1, self._cb_region.y1
+
+    # .................................................................................................................
+
+    def _apply_grid_callback_regions(self):
+        """
+        Map stored content-relative regions onto the current on-screen viewport.
+        Called after the parent layout sets this widget's final callback region.
+        """
+
+        if len(self._content_rel_regions) != len(self._grid):
+            return
+
+        ox, oy = self._resolve_screen_origin()
+
+        if not self._scroll_enabled:
+            for child, (rx1, ry1, rx2, ry2) in zip(self._grid, self._content_rel_regions):
+                child.enable(True)
+                child._cb_region.update(ox + rx1, oy + ry1, ox + rx2, oy + ry2)
+            return
+
+        viewport_h = self._viewport_height_px()
+        scroll_y = int(self._scroll_y_px)
         view_y2 = oy + viewport_h
 
-        for child in self._grid:
-            x1, y1, x2, y2 = child._cb_region.x1, child._cb_region.y1, child._cb_region.x2, child._cb_region.y2
-            y1_vis = y1 - scroll_y_px
-            y2_vis = y2 - scroll_y_px
-
-            if y2_vis <= oy or y1_vis >= view_y2:
-                child._cb_region.update(ox, oy, ox, oy)
+        for child, (rx1, ry1, rx2, ry2) in zip(self._grid, self._content_rel_regions):
+            if ry2 <= scroll_y or ry1 >= scroll_y + viewport_h:
+                child.enable(False)
                 continue
 
-            y1_clip = max(y1_vis, oy)
-            y2_clip = min(y2_vis, view_y2)
-            child._cb_region.update(x1, y1_clip, x2, y2_clip)
+            child.enable(True)
+            y1 = oy + ry1 - scroll_y
+            y2 = oy + ry2 - scroll_y
+            y1_clip = max(y1, oy)
+            y2_clip = min(y2, view_y2)
+            child._cb_region.update(ox + rx1, y1_clip, ox + rx2, y2_clip)
+
+    # .................................................................................................................
+
+    def finalize_callback_regions(self):
+        """Re-sync grid button hit targets after the parent stack assigns this widget's screen region."""
+
+        self._apply_grid_callback_regions()
 
     # .................................................................................................................
 
     def _render_up_to_size(self, h, w):
 
         self._sync_render_limits()
+        render_origin_x, render_origin_y = self._cb_region.x1, self._cb_region.y1
 
         if not self._scroll_enabled:
+            self._grid._cb_region.update(render_origin_x, render_origin_y, self._cb_region.x2, self._cb_region.y2)
             frame = self._grid._render_up_to_size(h, w)
+            self._capture_content_relative_regions(render_origin_x, render_origin_y)
             # Remember the fitted height at <=threshold objects for seamless scroll sizing later
             self._reference_viewport_h = h
             return frame
@@ -846,14 +916,13 @@ class ScrollableGridViewport(BaseCallback):
         row_h = self._row_height_px()
         content_h = self._num_rows() * row_h
 
-        self._grid._cb_region.update(self._cb_region.x1, self._cb_region.y1, self._cb_region.x2, self._cb_region.y2)
+        self._grid._cb_region.update(render_origin_x, render_origin_y, self._cb_region.x2, self._cb_region.y2)
         full_frame = self._grid._render_up_to_size(content_h, w)
+        self._capture_content_relative_regions(render_origin_x, render_origin_y)
 
         y0 = int(self._scroll_y_px)
         y1 = y0 + viewport_h
         viewport_frame = full_frame[y0:y1, :].copy()
-
-        self._shift_child_callback_regions(y0, viewport_frame.shape[0])
 
         if viewport_frame.shape[0] != h:
             pad_h = h - viewport_frame.shape[0]

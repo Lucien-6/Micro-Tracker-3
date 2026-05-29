@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-05-29
+
+### Fixed
+
+- **Object sidebar hit targets** — Button click and hover regions now stay aligned with on-screen `Object N` labels after layout render and when scrolling (fixes spurious hover while the pointer is over the video, and missed clicks in the sidebar).
+- **`ScrollableGridViewport.finalize_callback_regions()`** — Re-syncs grid button regions from content-relative coordinates using the parent sidebar’s final screen position; off-screen slots are disabled instead of sharing a single corner hit box.
+
 ## [1.4.0] - 2026-05-29
 
 ### Added
@@ -76,6 +83,7 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.4.1]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.1
 [1.4.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.0
 [1.3.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.3.0
 [1.2.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.2.0

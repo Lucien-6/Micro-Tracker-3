@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -754,6 +754,11 @@ class ObjectSlotManager:
         if ref_h > 0:
             self._object_grid_viewport_h = ref_h
 
+    def finalize_layout_callback_regions(self):
+        """Sync object-button hit boxes after a full layout render."""
+        if self.object_grid is not None and hasattr(self.object_grid, "finalize_callback_regions"):
+            self.object_grid.finalize_callback_regions()
+
     def _rebuild_ui(self, select_idx: int, refresh_window: bool = True):
         select_idx = max(0, min(select_idx, len(self.maskresults_list) - 1))
         if self.object_grid is not None:
@@ -956,6 +961,7 @@ disp_layout = obj_mgr.disp_layout
 
 # Render out an image with a target size, to figure out which side we should limit when rendering
 display_image = disp_layout.render(h=display_size_px, w=display_size_px)
+obj_mgr.finalize_layout_callback_regions()
 render_side = "h" if display_image.shape[1] > display_image.shape[0] else "w"
 render_limit_dict = {render_side: display_size_px}
 min_display_size_px = disp_layout._rdr.limits.min_h if render_side == "h" else disp_layout._rdr.limits.min_w
@@ -1185,6 +1191,7 @@ try:
         if add_object_btn.read():
             if obj_mgr.add_object():
                 layout_image = obj_mgr.disp_layout.render(h=display_size_px, w=display_size_px)
+                obj_mgr.finalize_layout_callback_regions()
                 render_side = "h" if layout_image.shape[1] > layout_image.shape[0] else "w"
                 render_limit_dict = {render_side: display_size_px}
                 min_display_size_px = (
@@ -1198,6 +1205,7 @@ try:
         if remove_object_btn.read():
             if obj_mgr.remove_selected_object():
                 layout_image = obj_mgr.disp_layout.render(h=display_size_px, w=display_size_px)
+                obj_mgr.finalize_layout_callback_regions()
                 render_side = "h" if layout_image.shape[1] > layout_image.shape[0] else "w"
                 render_limit_dict = {render_side: display_size_px}
                 min_display_size_px = (
@@ -1433,6 +1441,7 @@ try:
 
         # Display final image
         display_image = obj_mgr.disp_layout.render(**render_limit_dict)
+        obj_mgr.finalize_layout_callback_regions()
         obj_mgr.sync_object_grid_viewport_height()
         req_break, keypress = window.show(display_image, None if is_paused else 1)
         user_guide.process_events(window)
@@ -1494,6 +1503,7 @@ try:
                     uictrl, unselected_olay, frame, selected_mask_uint8, selected_mask_contours, unselected_contours
                 )
                 display_image = obj_mgr.disp_layout.render(**render_limit_dict)
+                obj_mgr.finalize_layout_callback_regions()
                 req_break, keypress = window.show(display_image, None)
                 user_guide.process_events(window)
                 if playback_slider is not None:
