@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-05-29
+
+### Added
+
+- **Up to 255 object slots** (was 32), each with its own prompt memory bank and tracking state.
+- **Scrollable object sidebar** — When more than 32 objects are defined, the right-hand two-column object list keeps the same button row height as at 32 objects; use the **mouse wheel** over the object grid to scroll. Recording, Add/Remove, and Save/Clear controls stay fixed outside the scroll area.
+- **Active object visibility** — Switching the selected object (sidebar, W/S, ↑/↓, or middle-click on a mask) scrolls the list so the active slot stays in view.
+
+### Changed
+
+- **`ScrollableGridViewport`** (`src/demo_helpers/ui/layout.py`) — Wraps the object `GridStack` for large slot counts.
+- **`HStack` layout** — Row height uses the tallest child instead of vertically cropping taller sidebars (fixes compressed object buttons after enabling scroll mode).
+- **`CBEventFlags.wheel_delta`** — Mouse wheel delta is passed to UI callbacks for object-list scrolling.
+
+### Notes
+
+- Combined label export still uses 8-bit gray values 1–255 per object index; very large slot counts increase per-frame UI render cost and multi-object inference time.
+
 ## [1.3.0] - 2026-05-28
 
 ### Changed
@@ -58,6 +76,7 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.4.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.0
 [1.3.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.3.0
 [1.2.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.2.0
 [1.1.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.1.0

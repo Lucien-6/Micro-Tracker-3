@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -32,7 +32,7 @@ from src.demo_helpers.ui.video import (
     LoopingVideoPlaybackSlider,
     ValueChangeTracker,
 )
-from src.demo_helpers.ui.layout import GridStack, HStack, VStack
+from src.demo_helpers.ui.layout import GridStack, HStack, ScrollableGridViewport, VStack
 from src.demo_helpers.ui.buttons import ToggleButton, ImmediateButton, RadioConstraint
 from src.demo_helpers.ui.text import ValueBlock
 from src.demo_helpers.ui.base import force_same_min_width
@@ -652,7 +652,10 @@ def handle_close_request(obj_mgr, video_path, window) -> bool:
 class ObjectSlotManager:
     """Manage dynamic object slots, sidebar UI, and per-object tracking/save data."""
 
-    MAX_OBJECTS = 32
+    MAX_OBJECTS = 255
+    OBJECT_GRID_SCROLL_THRESHOLD = 32
+    OBJECT_BUTTON_ROW_HEIGHT = 20
+    OBJECT_GRID_COLUMNS = 2
 
     def __init__(
         self,
@@ -685,6 +688,7 @@ class ObjectSlotManager:
         self.memory_list: list[SAMVideoMemoryBank] = []
         self.buffer_btns_list: list[ToggleButton] = []
         self.object_grid = None
+        self._object_grid_viewport_h = 0
         self.buffer_btn_constraint = RadioConstraint(ToggleButton("Object 1"))
         self.save_sidebar = None
         self.disp_layout = None
@@ -702,20 +706,31 @@ class ObjectSlotManager:
     def read_selection(self) -> tuple[bool, int, ToggleButton]:
         return self.buffer_btn_constraint.read()
 
+    def ensure_active_object_visible(self):
+        """Keep the active object button in view when the object list scrolls."""
+        if self.object_grid is None or not hasattr(self.object_grid, "ensure_object_visible"):
+            return
+        self.object_grid.ensure_object_visible(self.get_select_idx())
+
     def previous_object(self):
-        return self.buffer_btn_constraint.previous()
+        result = self.buffer_btn_constraint.previous()
+        self.ensure_active_object_visible()
+        return result
 
     def next_object(self):
-        return self.buffer_btn_constraint.next()
+        result = self.buffer_btn_constraint.next()
+        self.ensure_active_object_visible()
+        return result
 
     def select_object(self, objidx: int) -> bool:
         """Select an object by index. Returns True if the selection changed."""
         if not (0 <= objidx < len(self.maskresults_list)):
             return False
-        if objidx == self.get_select_idx():
-            return False
-        self.buffer_btn_constraint.change_to(objidx)
-        return True
+        changed = objidx != self.get_select_idx()
+        if changed:
+            self.buffer_btn_constraint.change_to(objidx)
+        self.ensure_active_object_visible()
+        return changed
 
     def _append_object_data(self):
         self.maskresults_list.append(MaskResults.create(self.init_mask_preds, self.init_mask_idx))
@@ -731,11 +746,28 @@ class ObjectSlotManager:
         if len(self.buffer_btns_list) > 1:
             force_same_min_width(*self.buffer_btns_list)
 
+    def sync_object_grid_viewport_height(self):
+        """Store the fitted object-grid height (used when scrolling starts above the threshold)."""
+        if self.object_grid is None:
+            return
+        ref_h = self.object_grid.get_reference_viewport_h()
+        if ref_h > 0:
+            self._object_grid_viewport_h = ref_h
+
     def _rebuild_ui(self, select_idx: int, refresh_window: bool = True):
         select_idx = max(0, min(select_idx, len(self.maskresults_list) - 1))
+        if self.object_grid is not None:
+            self.sync_object_grid_viewport_height()
         self._rebuild_object_rows()
         self.buffer_btn_constraint = RadioConstraint(*self.buffer_btns_list, initial_selected_index=select_idx)
-        self.object_grid = GridStack(*self.buffer_btns_list, num_columns=2).set_debug_name("ObjectGrid")
+        inner_grid = GridStack(*self.buffer_btns_list, num_columns=self.OBJECT_GRID_COLUMNS).set_debug_name("ObjectGrid")
+        self.object_grid = ScrollableGridViewport(
+            inner_grid,
+            num_columns=self.OBJECT_GRID_COLUMNS,
+            row_height=self.OBJECT_BUTTON_ROW_HEIGHT,
+            scroll_when_more_than=self.OBJECT_GRID_SCROLL_THRESHOLD,
+            reference_viewport_h=self._object_grid_viewport_h,
+        ).set_debug_name("ObjectGridViewport")
         self.save_sidebar = VStack(
             self.enable_record_btn,
             self.object_grid,
@@ -743,6 +775,7 @@ class ObjectSlotManager:
             HStack(self.buffer_save_btn, self.buffer_clear_btn),
         )
         self.disp_layout = self.build_disp_layout_fn(self.save_sidebar)
+        self.ensure_active_object_visible()
         if refresh_window and self.window is not None:
             self.window.replace_mouse_callbacks(self.disp_layout)
 
@@ -1110,6 +1143,8 @@ try:
         _, is_trackhistory_enabled = enable_history_btn.read()
 
         is_changed_buffer, buffer_select_idx, _ = obj_mgr.read_selection()
+        if is_changed_buffer:
+            obj_mgr.ensure_active_object_visible()
         is_changed_tool, _, selected_tool = ui_elems.tools_constraint.read()
         selected_has_no_stored_prompts = not obj_mgr.memory_list[buffer_select_idx].check_has_prompts()
         if is_changed_tool:
@@ -1398,6 +1433,7 @@ try:
 
         # Display final image
         display_image = obj_mgr.disp_layout.render(**render_limit_dict)
+        obj_mgr.sync_object_grid_viewport_height()
         req_break, keypress = window.show(display_image, None if is_paused else 1)
         user_guide.process_events(window)
         if req_break:

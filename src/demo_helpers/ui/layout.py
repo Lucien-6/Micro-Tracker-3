@@ -8,7 +8,7 @@
 import cv2
 import numpy as np
 
-from .base import BaseCallback
+from .base import BaseCallback, CBEventFlags, CBEventXY
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -54,16 +54,20 @@ class HStack(BaseCallback):
         if total_child_w != w:
             child_render_w_list = [int(w * ch_w / total_child_w) for ch_w in child_render_w_list]
 
+        # Row height is the tallest child needs (never crop vertically — cropping broke scroll sidebars)
+        pref_heights = [child._update_render_sizing(w=ch_w).h for child, ch_w in zip(self, child_render_w_list)]
+        row_h = max(h, max(pref_heights))
+
         # Have each child item draw itself
         imgs_list = []
         for child, ch_render_w in zip(self, child_render_w_list):
-            frame = child._render_up_to_size(h, ch_render_w)
+            frame = child._render_up_to_size(row_h, ch_render_w)
             orig_frame_h, orig_frame_w = frame.shape[0:2]
 
             # Adjust frame height if needed
             tpad, bpad, lpad, rpad = 0, 0, 0, 0
-            if orig_frame_h < h:
-                available_h = h - orig_frame_h
+            if orig_frame_h < row_h:
+                available_h = row_h - orig_frame_h
                 tpad = available_h // 2
                 bpad = available_h - tpad
                 lpad, rpad = 0, 0
@@ -71,14 +75,14 @@ class HStack(BaseCallback):
                 pcolor = child._rdr.pad.color
                 frame = cv2.copyMakeBorder(frame, tpad, bpad, lpad, rpad, ptype, value=pcolor)
 
-            elif orig_frame_h > h:
+            elif orig_frame_h > row_h:
                 print(
-                    f"Render sizing error! Expecting height: {h}, got {orig_frame_h} ({child._debug_name})",
+                    f"Render sizing error! Expecting height: {row_h}, got {orig_frame_h} ({child._debug_name})",
                     "-> Will crop!",
                     sep="\n",
                 )
-                frame = frame[:h, :, :]
-                orig_frame_h = h
+                frame = frame[:row_h, :, :]
+                orig_frame_h = row_h
 
             # Store image
             imgs_list.append(frame)
@@ -206,6 +210,49 @@ class VStack(BaseCallback):
 
     # .................................................................................................................
 
+    @staticmethod
+    def _allocate_child_heights(children, child_render_h_list: list[int], target_h: int) -> list[int]:
+        """
+        Fit children into target_h. Children with lock_min_h keep limits.min_h; remaining
+        height is shared proportionally among all other children.
+        """
+
+        locked_heights = {}
+        flex_indices = []
+        for idx, child in enumerate(children):
+            if child._rdr.limits.lock_min_h:
+                locked_heights[idx] = child._rdr.limits.min_h
+            else:
+                flex_indices.append(idx)
+
+        locked_total = sum(locked_heights.values())
+        remaining_h = target_h - locked_total
+        flex_total = sum(child_render_h_list[idx] for idx in flex_indices)
+
+        out_heights = list(child_render_h_list)
+        for idx, locked_h in locked_heights.items():
+            out_heights[idx] = locked_h
+
+        if len(flex_indices) == 0:
+            return out_heights
+
+        if flex_total <= 0 or remaining_h <= 0:
+            share = max(1, remaining_h // len(flex_indices))
+            for idx in flex_indices:
+                out_heights[idx] = share
+        else:
+            for idx in flex_indices:
+                out_heights[idx] = max(1, int(remaining_h * child_render_h_list[idx] / flex_total))
+
+        # Correct rounding drift on the last flexible child
+        height_error = target_h - sum(out_heights)
+        if height_error != 0:
+            out_heights[flex_indices[-1]] = max(1, out_heights[flex_indices[-1]] + height_error)
+
+        return out_heights
+
+    # .................................................................................................................
+
     def _render_up_to_size(self, h, w):
 
         # Set up starting stack point, used to keep track of child callback regions
@@ -216,7 +263,7 @@ class VStack(BaseCallback):
         child_render_h_list = [child._rdr.size.h for child in self]
         total_child_h = sum(child_render_h_list)
         if total_child_h != h:
-            child_render_h_list = [int(h * ch_h / total_child_h) for ch_h in child_render_h_list]
+            child_render_h_list = self._allocate_child_heights(self, child_render_h_list, h)
 
         # Have each child item draw itself
         imgs_list = []
@@ -636,6 +683,221 @@ class GridStack(BaseCallback):
         best_match_idx = np.argmax(ar_similarity)
 
         return rc_options[best_match_idx]
+
+    # .................................................................................................................
+
+
+class ScrollableGridViewport(BaseCallback):
+    """
+    Wraps a GridStack of object toggle buttons. While item count is at or below scroll_when_more_than,
+    sizing and rendering are delegated to the grid (including vertical compression from parent VStack).
+    Above the threshold, the viewport keeps a fixed row height and shows a fixed number of rows; excess
+    rows are viewed by scrolling with the mouse wheel.
+    """
+
+    # .................................................................................................................
+
+    def __init__(
+        self,
+        grid: GridStack,
+        *,
+        num_columns: int = 2,
+        row_height: int = 20,
+        scroll_when_more_than: int = 32,
+        reference_viewport_h: int = 0,
+    ):
+
+        super().__init__(128, 128, expand_h=False, expand_w=True)
+        self._grid = grid
+        self._num_columns = num_columns
+        self._row_height = row_height
+        self._scroll_threshold = scroll_when_more_than
+        self._reference_viewport_h = max(0, int(reference_viewport_h))
+        self._scroll_y_px = 0
+        self.append_children(grid)
+        self._sync_render_limits()
+
+    # .................................................................................................................
+
+    def __repr__(self):
+        scroll_state = "scroll" if self._scroll_enabled else "fit"
+        return f"{self._debug_name} ({scroll_state}, {len(self._grid)} items)"
+
+    # .................................................................................................................
+
+    @property
+    def _scroll_enabled(self) -> bool:
+        return len(self._grid) > self._scroll_threshold
+
+    def _num_rows(self) -> int:
+        return int(np.ceil(len(self._grid) / self._num_columns))
+
+    def _viewport_row_count(self) -> int:
+        return int(np.ceil(self._scroll_threshold / self._num_columns))
+
+    def _viewport_height_px(self) -> int:
+        """Height of the visible object grid area; matches the fitted height used at the scroll threshold."""
+        if self._reference_viewport_h > 0:
+            return self._reference_viewport_h
+        return self._viewport_row_count() * self._row_height
+
+    def _row_height_px(self) -> int:
+        """Per-button row height inside the viewport (derived from fitted viewport, not a hard-coded 20)."""
+        return max(1, self._viewport_height_px() // self._viewport_row_count())
+
+    def _content_height_px(self) -> int:
+        return self._num_rows() * self._row_height_px()
+
+    def _max_scroll_px(self) -> int:
+        return max(0, self._content_height_px() - self._viewport_height_px())
+
+    def _sync_render_limits(self):
+        if self._scroll_enabled:
+            self._scroll_y_px = min(self._scroll_y_px, self._max_scroll_px())
+            viewport_h = self._viewport_height_px()
+            self._rdr.limits.update(
+                min_h=viewport_h,
+                max_h=viewport_h,
+                min_w=self._grid._rdr.limits.min_w,
+                expand_h=False,
+                expand_w=True,
+                lock_min_h=True,
+            )
+        else:
+            self._scroll_y_px = 0
+            self._rdr.limits.match_to(self._grid._rdr.limits)
+            self._rdr.limits.update(lock_min_h=False)
+
+    # .................................................................................................................
+
+    def on_mouse_wheel(self, cbxy: CBEventXY, cbflags: CBEventFlags) -> None:
+        if not self._scroll_enabled or not cbxy.is_in_region:
+            return
+        delta = cbflags.wheel_delta
+        if delta == 0:
+            return
+        # Standard wheel notch is 120; scroll roughly one row per notch
+        row_step = self._row_height_px()
+        self._scroll_y_px = int(np.clip(self._scroll_y_px - (delta / 120.0) * row_step, 0, self._max_scroll_px()))
+
+    # .................................................................................................................
+
+    def ensure_object_visible(self, objidx: int) -> None:
+        """Scroll the viewport so the given object button row is fully visible."""
+
+        if not self._scroll_enabled or len(self._grid) == 0:
+            return
+
+        objidx = max(0, min(int(objidx), len(self._grid) - 1))
+        row_idx = objidx // self._num_columns
+        row_top = row_idx * self._row_height_px()
+        row_bottom = row_top + self._row_height_px()
+
+        viewport_h = self._viewport_height_px()
+        view_top = self._scroll_y_px
+        view_bottom = view_top + viewport_h
+
+        if row_top < view_top:
+            self._scroll_y_px = row_top
+        elif row_bottom > view_bottom:
+            self._scroll_y_px = row_bottom - viewport_h
+
+        self._scroll_y_px = int(np.clip(self._scroll_y_px, 0, self._max_scroll_px()))
+
+    # .................................................................................................................
+
+    def _shift_child_callback_regions(self, scroll_y_px: int, viewport_h: int):
+        """Map grid callback regions from full content coordinates into the visible viewport."""
+
+        ox, oy = self._cb_region.x1, self._cb_region.y1
+        view_y2 = oy + viewport_h
+
+        for child in self._grid:
+            x1, y1, x2, y2 = child._cb_region.x1, child._cb_region.y1, child._cb_region.x2, child._cb_region.y2
+            y1_vis = y1 - scroll_y_px
+            y2_vis = y2 - scroll_y_px
+
+            if y2_vis <= oy or y1_vis >= view_y2:
+                child._cb_region.update(ox, oy, ox, oy)
+                continue
+
+            y1_clip = max(y1_vis, oy)
+            y2_clip = min(y2_vis, view_y2)
+            child._cb_region.update(x1, y1_clip, x2, y2_clip)
+
+    # .................................................................................................................
+
+    def _render_up_to_size(self, h, w):
+
+        self._sync_render_limits()
+
+        if not self._scroll_enabled:
+            frame = self._grid._render_up_to_size(h, w)
+            # Remember the fitted height at <=threshold objects for seamless scroll sizing later
+            self._reference_viewport_h = h
+            return frame
+
+        viewport_h = self._viewport_height_px()
+        if self._reference_viewport_h <= 0:
+            self._reference_viewport_h = h
+            viewport_h = h
+            self._sync_render_limits()
+
+        row_h = self._row_height_px()
+        content_h = self._num_rows() * row_h
+
+        self._grid._cb_region.update(self._cb_region.x1, self._cb_region.y1, self._cb_region.x2, self._cb_region.y2)
+        full_frame = self._grid._render_up_to_size(content_h, w)
+
+        y0 = int(self._scroll_y_px)
+        y1 = y0 + viewport_h
+        viewport_frame = full_frame[y0:y1, :].copy()
+
+        self._shift_child_callback_regions(y0, viewport_frame.shape[0])
+
+        if viewport_frame.shape[0] != h:
+            pad_h = h - viewport_frame.shape[0]
+            if pad_h > 0:
+                ptype = self._rdr.pad.style
+                pcolor = self._rdr.pad.color
+                viewport_frame = cv2.copyMakeBorder(viewport_frame, 0, pad_h, 0, 0, ptype, value=pcolor)
+            else:
+                viewport_frame = viewport_frame[:h, :, :]
+
+        return viewport_frame
+
+    # .................................................................................................................
+
+    def get_reference_viewport_h(self) -> int:
+        return self._reference_viewport_h
+
+    # .................................................................................................................
+
+    def _update_render_sizing(self, h=None, w=None):
+
+        self._sync_render_limits()
+        if self._scroll_enabled:
+            viewport_h = self._viewport_height_px()
+            if w is None:
+                w = self._grid._get_width_given_height(viewport_h)
+            return self._rdr.set_render_size(viewport_h, w)
+
+        return super()._update_render_sizing(h, w)
+
+    # .................................................................................................................
+
+    def _get_height_and_width_without_hint(self) -> [int, int]:
+        if self._scroll_enabled:
+            return self._viewport_height_px(), self._grid._rdr.limits.min_w
+        return self._grid._get_height_and_width_without_hint()
+
+    def _get_height_given_width(self, w) -> int:
+        if self._scroll_enabled:
+            return self._viewport_height_px()
+        return self._grid._get_height_given_width(w)
+
+    def _get_width_given_height(self, h) -> int:
+        return self._grid._get_width_given_height(h)
 
     # .................................................................................................................
 

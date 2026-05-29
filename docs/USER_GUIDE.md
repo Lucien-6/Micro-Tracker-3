@@ -1,7 +1,7 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.3.0  
-**Last updated:** 2026-05-28  
+**Version:** 1.4.0  
+**Last updated:** 2026-05-29  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
 This document mirrors the in-app guide (press **H** while the main window is focused; switch **English / 中文** in the guide window). For installation and repository layout, see [README.md](../README.md).
@@ -16,7 +16,7 @@ Micro Tracker 3 is an interactive desktop tool for:
 2. Propagating instance masks through time (tracking).
 3. Exporting combined **8-bit label TIF** sequences for downstream analysis (ImageJ, TrackMate, custom pipelines).
 
-The app supports up to **32 object slots**, each with its own prompt memory and optional frame history.
+The app supports up to **255 object slots**, each with its own prompt memory and optional frame history.
 
 **Code layout (v1.3.0+):** SAM inference and UI helpers live under `src/` (formerly `muggled_sam/`). Run `python main.py` from the repository root; extend the app with `from src...` imports.
 
@@ -105,8 +105,18 @@ Adjust sensitivity with `--objscore_threshold` (higher = stricter “lost” det
 ## 6. Multi-object notes
 
 - Loss and stop frames are **per object** — one target leaving the field does not stop others.
-- Combined export assigns gray levels: 0 = background, 1 = Object 1, 2 = Object 2, …
+- Combined export assigns gray levels: 0 = background, 1 = Object 1, 2 = Object 2, … (up to 255).
 - Later objects overwrite overlapping pixels in the combined label image.
+
+### Object sidebar (right panel)
+
+| Count | Behavior |
+|-------|----------|
+| **1–32** | Two-column **Object N** buttons share the available sidebar height (may compress with window size). |
+| **33–255** | The object grid keeps the **same row height** as when 32 objects are shown; **mouse wheel** over the grid scrolls extra rows. Enable Recording, Add/Remove, and Save/Clear stay fixed above and below the list. |
+| **Selection** | The **active** object scrolls into view when you pick a slot (sidebar click, **W** / **S**, **↑** / **↓**, or middle-click on a tracked mask). |
+
+Add slots with **+** or **Add Object**; remove with **-** or **Remove Object** (at least one slot always remains).
 
 ---
 
@@ -120,6 +130,21 @@ Adjust sensitivity with `--objscore_threshold` (higher = stricter “lost” det
 | Timeline slider | Scrub; masks clear while dragging, tracking refreshes on release (if prompts exist) |
 
 While scrubbing, on-screen masks are cleared temporarily; after release, tracking respects each object’s stop frame (objects at or after their loss frame stay inactive until you move earlier or re-store prompts).
+
+---
+
+## 7b. Keyboard and mouse (summary)
+
+Press **F1** in the main window for the full shortcut panel. Common bindings:
+
+| Input | Action |
+|-------|--------|
+| H | User guide (English / 中文) |
+| Tab | Store Prompt |
+| W / S or ↑ / ↓ | Previous / next object |
+| + / − | Add / remove object slot |
+| Mouse wheel (object grid, 33+ objects) | Scroll object list |
+| Middle-click | Select object under mask |
 
 ---
 

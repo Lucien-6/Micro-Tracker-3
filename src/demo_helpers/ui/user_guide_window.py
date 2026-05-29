@@ -33,7 +33,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "It lets you annotate targets with SAM (Segment Anything Model), propagate instance masks through time, "
                 "and export 8-bit label image sequences for analysis in ImageJ, TrackMate, MATLAB, or Python.",
                 _bullets(
-                    "Up to 32 independent object slots",
+                    "Up to 255 independent object slots",
                     "SAM 2 / SAM 3 / SAM 3.1 weights via the bundled src/ inference stack",
                     "CUDA, Apple MPS, or CPU inference",
                 ),
@@ -103,9 +103,18 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
             "6. Multi-object and export",
             (
                 "Loss handling is per object; other slots keep tracking independently.",
-                "Combined export uses gray levels: 0 = background, 1 = Object 1, 2 = Object 2, … Later objects overwrite overlaps.",
+                "Combined export uses gray levels: 0 = background, 1 = Object 1, 2 = Object 2, … (up to 255). Later objects overwrite overlaps.",
                 "Recording + Save Results writes {video}_MT-Results_{timestamp}/00001.tif, …",
                 "Only recorded frames are saved. Lost objects contribute label 0 where their mask is zero.",
+            ),
+        ),
+        GuideSection(
+            "6b. Object sidebar (33+ slots)",
+            (
+                "The right panel lists objects in two columns (Object 1, Object 2, …).",
+                "With 33 or more objects, the list keeps the same button row height as at 32 objects.",
+                "Scroll the grid with the mouse wheel. Enable Recording and Add/Remove / Save/Clear stay fixed outside the scroll area.",
+                "When you change the active object (sidebar, W/S, arrows, or middle-click on a mask), the list scrolls to keep that slot visible.",
             ),
         ),
         GuideSection(
@@ -132,6 +141,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                     "← / → — Switch prompt tool",
                     "↑ / ↓ or W / S — Previous / next object",
                     "+ / - — Add / remove object slot",
+                    "Mouse wheel (over object grid, 33+ objects) — Scroll object list",
                     "[ / ] — Zoom display out / in",
                     "Middle-click — Select object under cursor (tracked masks)",
                     "Q / Esc — Quit",
@@ -178,7 +188,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "可使用 SAM（Segment Anything Model）标注目标、在时间上传播实例掩膜，"
                 "并导出 8 位灰度标签序列，供 ImageJ、TrackMate、MATLAB 或 Python 后续分析。",
                 _bullets(
-                    "最多 32 个独立对象槽位",
+                    "最多 255 个独立对象槽位",
                     "通过内置 src/ 推理代码支持 SAM 2 / SAM 3 / SAM 3.1 权重",
                     "支持 CUDA、Apple MPS 或 CPU 推理",
                 ),
@@ -248,9 +258,18 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
             "6. 多对象与导出",
             (
                 "丢失处理按对象独立；其他槽位不受影响。",
-                "合并导出灰度：0=背景，1=对象1，2=对象2… 后绘对象覆盖重叠区域。",
+                "合并导出灰度：0=背景，1=对象1，2=对象2…（最多 255）。后绘对象覆盖重叠区域。",
                 "录制并 Save Results 生成 {视频名}_MT-Results_{时间戳}/00001.tif 等。",
                 "仅保存已录制帧；丢失对象在掩膜为零的帧上对应标签 0。",
+            ),
+        ),
+        GuideSection(
+            "6b. 对象侧栏（超过 32 个）",
+            (
+                "右侧面板以两列显示 Object 1、Object 2…",
+                "超过 32 个对象时，列表行高与 32 个对象时一致，不再被压扁。",
+                "在对象网格上滚动鼠标滚轮浏览；Enable Recording 与 Add/Remove、Save/Clear 固定在列表外。",
+                "切换当前对象（侧栏、W/S、方向键或中键点选掩膜）时，列表会自动滚到该槽位。",
             ),
         ),
         GuideSection(
@@ -277,6 +296,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                     "← / → — 切换提示工具",
                     "↑ / ↓ 或 W / S — 上 / 下一个对象",
                     "+ / - — 增加 / 删除对象槽位",
+                    "鼠标滚轮（对象网格上，超过 32 个时）— 滚动对象列表",
                     "[ / ] — 缩小 / 放大显示",
                     "中键 — 点选掩膜下的对象",
                     "Q / Esc — 退出",

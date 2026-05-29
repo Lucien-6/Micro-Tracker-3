@@ -60,6 +60,7 @@ SHORTCUT_SECTIONS = (
             ("W / S", "Previous / next object slot"),
             ("+ / =", "Add object slot"),
             ("-", "Remove selected object slot"),
+            ("Mouse wheel", "Scroll object list (33+ objects, over grid)"),
         ),
     ),
     (
@@ -67,6 +68,7 @@ SHORTCUT_SECTIONS = (
         (130, 95, 165),
         (
             ("[ / ]", "Zoom display out / in"),
+            ("H", "Toggle user guide (English / 中文)"),
             ("F1", "Toggle this shortcuts window"),
             ("Q / Esc", "Quit application"),
         ),
@@ -140,7 +142,7 @@ def _render_shortcuts_panel() -> np.ndarray:
     header_roi = img[header_top:header_bottom, header_pad_x : panel_w - header_pad_x]
     title_drawer.xy_norm(header_roi, "Keyboard Shortcuts", (0.5, 0.36))
     subtitle_drawer.xy_norm(
-        header_roi, "Micro Tracker 3 v1.3.0  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
+        header_roi, "Micro Tracker 3 v1.4.0  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
     )
 
     y = header_bottom + 10

@@ -21,14 +21,23 @@ class CBEventFlags:
     ctrl_key: bool
     shift_key: bool
     alt_key: bool
+    wheel_delta: int = 0
 
     @classmethod
-    def create(cls, cv2_flags):
+    def create(cls, cv2_flags, wheel_delta=0):
         return cls(
-            cv2_flags & cv2.EVENT_FLAG_CTRLKEY,
-            cv2_flags & cv2.EVENT_FLAG_SHIFTKEY,
-            cv2_flags & cv2.EVENT_FLAG_ALTKEY,
+            bool(cv2_flags & cv2.EVENT_FLAG_CTRLKEY),
+            bool(cv2_flags & cv2.EVENT_FLAG_SHIFTKEY),
+            bool(cv2_flags & cv2.EVENT_FLAG_ALTKEY),
+            wheel_delta,
         )
+
+    @classmethod
+    def from_mouse_wheel(cls, cv2_flags):
+        delta = (cv2_flags >> 16) & 0xFFFF
+        if delta >= 0x8000:
+            delta -= 0x10000
+        return cls.create(cv2_flags, wheel_delta=delta)
 
 
 @dataclass(frozen=True)
@@ -89,10 +98,11 @@ class RenderLimits:
     min_w: int = 0
     expand_h: bool = False
     expand_w: bool = False
+    lock_min_h: bool = False
     max_h: int = 4096
     max_w: int = 4096
 
-    def update(self, min_h=None, min_w=None, expand_h=None, expand_w=None, max_h=None, max_w=None):
+    def update(self, min_h=None, min_w=None, expand_h=None, expand_w=None, lock_min_h=None, max_h=None, max_w=None):
 
         if min_h is not None:
             self.min_h = min_h
@@ -102,6 +112,8 @@ class RenderLimits:
             self.expand_h = expand_h
         if expand_w is not None:
             self.expand_w = expand_w
+        if lock_min_h is not None:
+            self.lock_min_h = lock_min_h
         if max_h is not None:
             self.max_h = max_h
         if max_w is not None:
@@ -114,6 +126,7 @@ class RenderLimits:
         self.min_w = other_render_limits.min_w
         self.expand_h = other_render_limits.expand_h
         self.expand_w = other_render_limits.expand_w
+        self.lock_min_h = other_render_limits.lock_min_h
         self.max_h = other_render_limits.max_h
         self.max_w = other_render_limits.max_w
         return self
@@ -327,8 +340,9 @@ class BaseCallback:
                 cbitem.on_middle_double(cbxy, cbflags)
 
         elif event == cv2.EVENT_MOUSEWHEEL:
+            wheel_cbflags = CBEventFlags.from_mouse_wheel(flags)
             for cbitem, cbxy in self._cb_iter(x, y):
-                cbitem.on_mouse_wheel(cbxy, cbflags)
+                cbitem.on_mouse_wheel(cbxy, wheel_cbflags)
 
         return
 

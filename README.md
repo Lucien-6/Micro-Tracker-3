@@ -6,7 +6,7 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_sam](https://github.com/heyoeyo/muggled_sam); SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.3.0](CHANGELOG.md) (2026-05-28) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.4.0](CHANGELOG.md) (2026-05-29) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -17,7 +17,7 @@ Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_
 | **Segmentation** | Point, box, and hover-based prompts with live mask preview |
 | **Tracking** | Temporal propagation via SAM memory encoder (prompt + frame history) |
 | **Lost-target policy** | Per-object stop on low object score (default); optional continued inference via `--keep_bad_objscores` |
-| **Multi-object** | Up to 32 independent object slots, each with its own memory bank |
+| **Multi-object** | Up to 255 independent object slots; scrollable two-column list (mouse wheel) when more than 32 |
 | **Playback** | Pause, play, reverse, frame stepping, and timeline scrubbing |
 | **Export** | Combined per-frame label masks as `00001.tif`, `00002.tif`, … |
 | **Models** | Auto-detects SAM 2, SAM 3, or SAM 3.1 weights (`.pt` / `.pth`) |
@@ -230,7 +230,7 @@ This format is compatible with common downstream tools (ImageJ, TrackMate, custo
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.3.0)
+├── VERSION                   # Current release (1.4.0)
 ├── CHANGELOG.md
 ├── docs/
 │   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)
@@ -260,7 +260,7 @@ Micro Tracker 3 has three layers:
    - **Interactive context** — `encode_image`, `encode_prompts`, `generate_masks` (single-frame segmentation)
    - **Tracking context** — `encode_prompt_memory`, `step_video_masking`, `encode_frame_memory` (video propagation)
 
-Each object slot maintains its own prompt memory (up to 32 entries), frame memory deque (default depth 6, configurable via `--max_memories`), and an optional **tracking stop frame index** when a target is lost in default mode.
+Each object slot maintains its own prompt memory (up to 32 entries per slot), frame memory deque (default depth 6, configurable via `--max_memories`), and an optional **tracking stop frame index** when a target is lost in default mode. With more than 32 slots, the sidebar object grid scrolls with the mouse wheel while keeping the same row height as at 32 objects; the active slot scrolls into view when selected.
 
 Press **H** for the in-app user guide (English / 中文) or **F1** for keyboard shortcuts.
 
