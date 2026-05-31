@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -908,7 +908,7 @@ force_same_min_width(vram_text, device_text, shortcuts_btn)
 # Set up button controls
 track_btn = ToggleButton("Track", on_color=(30, 140, 30))
 reversal_btn = ToggleButton("Reverse", default_state=False, text_scale=0.35)
-store_prompt_btn = ImmediateButton("Store Prompt", text_scale=0.35, color=(145, 160, 40))
+store_prompt_btn = ImmediateButton("Store Prompt (Enter)", text_scale=0.35, color=(145, 160, 40))
 clear_prompts_btn = ImmediateButton("Clear Prompts", text_scale=0.35, color=(80, 110, 230))
 enable_history_btn = ToggleButton("Enable History", default_state=True, text_scale=0.35, on_color=(90, 85, 115))
 clear_history_btn = ImmediateButton("Clear History", text_scale=0.35, color=(130, 60, 90))
@@ -979,7 +979,7 @@ shortcuts_help.attach_f1_toggle(window)
 user_guide = UserGuideWindow(__app_name__, __version__, __author__, __author_email__, initial_lang="zh")
 user_guide.attach_h_toggle(window)
 
-# Change tools on left/right arrow keys; change objects on up/down arrow keys
+# Change tools on Tab / Shift+Tab; change objects on up/down arrow keys
 uictrl.attach_arrowkey_callbacks(window)
 if has_video_source:
     window.attach_keypress_callback(" ", vreader.toggle_pause)
@@ -990,14 +990,22 @@ window.attach_keypress_callback("s", obj_mgr.next_object)
 window.attach_keypress_callback("+", add_object_btn.click)
 window.attach_keypress_callback("=", add_object_btn.click)
 window.attach_keypress_callback("-", remove_object_btn.click)
-window.attach_keypress_callback(KEY.TAB, store_prompt_btn.click)
+
+
+def _store_prompt_if_paused():
+    if has_video_source and not vreader.get_pause_state():
+        return
+    store_prompt_btn.click()
+
+
+window.attach_keypress_callback(KEY.ENTER, _store_prompt_if_paused)
 window.attach_keypress_callback("r", reversal_btn.toggle)
 
 # For clarity, some additional keypress codes
 KEY_ZOOM_IN = ord("]")
 KEY_ZOOM_OUT = ord("[")
-KEY_STEP_BACK = ord("a")
-KEY_STEP_FWD = ord("d")
+KEY_STEP_BACK_KEYS = frozenset({ord("a"), KEY.LEFT_ARROW})
+KEY_STEP_FWD_KEYS = frozenset({ord("d"), KEY.RIGHT_ARROW})
 
 # Set up various value tracking helpers
 imgenc_idx_keeper = ValueChangeTracker(-1)
@@ -1464,9 +1472,9 @@ try:
 
         step_delta = 0
         if has_video_source and is_paused:
-            if keypress == KEY_STEP_BACK:
+            if keypress in KEY_STEP_BACK_KEYS:
                 step_delta = -1
-            elif keypress == KEY_STEP_FWD:
+            elif keypress in KEY_STEP_FWD_KEYS:
                 step_delta = 1
 
         if step_delta != 0:
@@ -1515,9 +1523,9 @@ try:
 
                 step_delta = 0
                 if not req_break and is_paused:
-                    if keypress == KEY_STEP_BACK:
+                    if keypress in KEY_STEP_BACK_KEYS:
                         step_delta = -1
-                    elif keypress == KEY_STEP_FWD:
+                    elif keypress in KEY_STEP_FWD_KEYS:
                         step_delta = 1
 
             if req_break:

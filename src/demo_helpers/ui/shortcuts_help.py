@@ -26,7 +26,8 @@ SHORTCUT_SECTIONS = (
         (95, 145, 210),
         (
             ("Space", "Play / pause video"),
-            ("A / D", "Step backward / forward (while paused)"),
+            ("Left / Right", "Step backward / forward (while paused)"),
+            ("A / D", "Step backward / forward (while paused, alternate)"),
             ("R", "Toggle reverse playback direction"),
             ("Timeline", "Drag slider to scrub frames"),
         ),
@@ -35,9 +36,9 @@ SHORTCUT_SECTIONS = (
         "Prompt Tools",
         (145, 160, 90),
         (
-            ("Left / Right", "Switch Hover / Box / FG / BG tool"),
+            ("Tab / Shift+Tab", "Switch Hover / Box / FG / BG tool (forward / back)"),
             ("C", "Clear on-screen prompts (not stored memory)"),
-            ("Tab", "Store current prompts to selected object"),
+            ("Enter", "Store current prompts to selected object (while paused)"),
             ("Hover + move", "Live mask preview (no stored prompts)"),
         ),
     ),
@@ -142,7 +143,7 @@ def _render_shortcuts_panel() -> np.ndarray:
     header_roi = img[header_top:header_bottom, header_pad_x : panel_w - header_pad_x]
     title_drawer.xy_norm(header_roi, "Keyboard Shortcuts", (0.5, 0.36))
     subtitle_drawer.xy_norm(
-        header_roi, "Micro Tracker 3 v1.4.1  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
+        header_roi, "Micro Tracker 3 v1.4.2  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
     )
 
     y = header_bottom + 10

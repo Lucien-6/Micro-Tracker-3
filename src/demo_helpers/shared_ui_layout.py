@@ -279,11 +279,11 @@ class PromptUIControl(BaseUIControl):
     # .................................................................................................................
 
     def attach_arrowkey_callbacks(self, window: DisplayWindow):
-        """Helper used to attach keypress callbacks so that tools can be switched with arrow keys"""
+        """Helper used to attach keypress callbacks so that tools can be switched with Tab / Shift+Tab"""
 
         tool_const = self.elems.tools_constraint
-        window.attach_arrow_keypress_callback("left", tool_const.previous)
-        window.attach_arrow_keypress_callback("right", tool_const.next)
+        window.attach_keypress_callback(KEY.TAB, tool_const.next)
+        window.attach_shift_tab_callback(tool_const.previous)
         window.attach_keypress_callback("c", self.elems.tools.clear.click)
 
         return self

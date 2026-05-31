@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-05-31
+
+### Changed
+
+- **Keyboard shortcuts (annotation workflow)** — Remapped for faster hands-on-video use:
+  - **Enter** — Store Prompt while paused (replaces Tab).
+  - **Tab / Shift+Tab** — Switch prompt tool forward / backward (Hover / Box / FG / BG; replaces ← / →).
+  - **← / →** — Step one frame backward / forward while paused; **A / D** remain as alternate step keys.
+- **Store Prompt button** — Label shows `(Enter)`; Enter is ignored during playback.
+- **Documentation** — README, `docs/USER_GUIDE.md`, F1 shortcuts panel, and in-app user guide (H) updated to match.
+
 ## [1.4.1] - 2026-05-29
 
 ### Fixed
@@ -83,6 +94,7 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.4.2]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.2
 [1.4.1]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.1
 [1.4.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.0
 [1.3.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.3.0

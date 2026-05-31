@@ -1,7 +1,7 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.4.1  
-**Last updated:** 2026-05-29  
+**Version:** 1.4.2  
+**Last updated:** 2026-05-31  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
 This document mirrors the in-app guide (press **H** while the main window is focused; switch **English / 中文** in the guide window). For installation and repository layout, see [README.md](../README.md).
@@ -29,8 +29,8 @@ The app supports up to **255 object slots**, each with its own prompt memory and
 | 1 | Load **model** and **video** (GUI buttons or `-m` / `-i`). |
 | 2 | Select an **object slot** (Object 1, 2, …). |
 | 3 | **Pause** the video (Space). |
-| 4 | Choose a prompt tool (Hover / Box / FG / BG) and annotate the target. |
-| 5 | **Store Prompt** (Tab or button) — writes prompts into the tracker memory bank. |
+| 4 | Choose a prompt tool (Hover / Box / FG / BG; **Tab / Shift+Tab** to switch) and annotate the target. |
+| 5 | **Store Prompt** (Enter or button, while paused) — writes prompts into the tracker memory bank. |
 | 6 | **Track** — play forward (Space / Track); masks update each new frame. |
 | 7 | Optional: **Enable Recording**, then **Save Results** for TIF export. |
 
@@ -49,8 +49,9 @@ Repeat steps 2–5 for additional objects before tracking.
 | **FG Point** | Foreground clicks (include region). |
 | **BG Point** | Background clicks (exclude region). |
 
+- **Tab / Shift+Tab** — Switch prompt tool forward / backward (Hover → Box → FG → BG).
 - **C** — Clears on-screen prompts only (does not remove stored tracker memory).
-- **Tab / Store Prompt** — Saves current interactive prompts to the **selected** object slot.
+- **Enter / Store Prompt** — Saves current interactive prompts to the **selected** object slot (while paused only).
 
 ### Store Prompt requirements
 
@@ -127,7 +128,8 @@ Click targets are kept in sync with the visible buttons after each UI redraw and
 | Control | Action |
 |---------|--------|
 | Space | Play / pause |
-| A / D | Step one frame (paused) |
+| ← / → | Step one frame backward / forward (paused) |
+| A / D | Step one frame backward / forward (paused, alternate) |
 | R | Reverse playback |
 | Timeline slider | Scrub; masks clear while dragging, tracking refreshes on release (if prompts exist) |
 
@@ -142,11 +144,18 @@ Press **F1** in the main window for the full shortcut panel. Common bindings:
 | Input | Action |
 |-------|--------|
 | H | User guide (English / 中文) |
-| Tab | Store Prompt |
+| F1 | Keyboard shortcuts panel |
+| Space | Play / pause |
+| Enter | Store Prompt (while paused) |
+| Tab / Shift+Tab | Switch prompt tool forward / backward |
+| C | Clear on-screen prompts |
+| ← / → or A / D | Step one frame (paused) |
 | W / S or ↑ / ↓ | Previous / next object |
 | + / − | Add / remove object slot |
+| [ / ] | Zoom display out / in |
 | Mouse wheel (object grid, 33+ objects) | Scroll object list |
 | Middle-click | Select object under mask |
+| Q / Esc | Quit |
 
 ---
 

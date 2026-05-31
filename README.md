@@ -6,7 +6,7 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_sam](https://github.com/heyoeyo/muggled_sam); SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.4.1](CHANGELOG.md) (2026-05-29) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.4.2](CHANGELOG.md) (2026-05-31) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -125,7 +125,7 @@ On first run, the app resolves the model from (in order):
 ```text
   ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
   │ Load video  │ ──► │ Pause & annotate │ ──► │ Store Prompt    │
-  │  (+ model)  │     │ (box / FG / BG)  │     │  (Tab / button) │
+  │  (+ model)  │     │ (box / FG / BG)  │     │ (Enter / btn) │
   └─────────────┘     └──────────────────┘     └────────┬────────┘
                                                         │
                         ┌──────────────────┐            ▼
@@ -139,8 +139,8 @@ On first run, the app resolves the model from (in order):
 1. **Load resources** — Use the **Model** and **Video** buttons in the header bar, or pass `-m` / `-i`.
 2. **Select an object slot** — `Object 1`, `Object 2`, … (Up/Down or W/S). Add slots with **+**.
 3. **Pause the video** — Space bar.
-4. **Annotate** — Choose Hover, Box, FG Point, or BG Point; place prompts on the target.
-5. **Store Prompt** — Click **Store Prompt** or press **Tab** (requires FG/BG points or a box on the current frame; see [user guide](docs/USER_GUIDE.md)).
+4. **Annotate** — Choose Hover, Box, FG Point, or BG Point (**Tab / Shift+Tab** to switch tools); place prompts on the target.
+5. **Store Prompt** — Click **Store Prompt (Enter)** or press **Enter** while paused (requires FG/BG points or a box on the current frame; see [user guide](docs/USER_GUIDE.md)).
 6. **Track** — Press **Track** or Space to play forward; masks propagate automatically each frame. If a target is lost (low object score), tracking for that object stops by default until you move to an earlier frame or store new prompts.
 7. **Record** — Enable **Enable Recording** to buffer label frames in memory.
 8. **Export** — Click **Save Results** to write a TIF sequence to disk.
@@ -156,10 +156,11 @@ Press **F1** inside the app for the full in-GUI reference. Summary:
 | Keys | Action |
 |------|--------|
 | `Space` | Play / pause |
-| `A` / `D` | Step backward / forward (while paused) |
+| `←` / `→` | Step backward / forward (while paused) |
+| `A` / `D` | Step backward / forward (while paused, alternate) |
 | `R` | Toggle reverse playback |
-| `←` / `→` | Switch prompt tool (Hover / Box / FG / BG) |
-| `Tab` | Store current prompts to selected object |
+| `Tab` / `Shift+Tab` | Switch prompt tool forward / backward (Hover / Box / FG / BG) |
+| `Enter` | Store current prompts to selected object (while paused) |
 | `C` | Clear on-screen prompts (not stored memory) |
 | `↑` / `↓` or `W` / `S` | Previous / next object slot |
 | `+` / `-` | Add / remove object slot |
@@ -230,7 +231,7 @@ This format is compatible with common downstream tools (ImageJ, TrackMate, custo
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.4.1)
+├── VERSION                   # Current release (1.4.2)
 ├── CHANGELOG.md
 ├── docs/
 │   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)

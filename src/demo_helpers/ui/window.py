@@ -118,6 +118,12 @@ class DisplayWindow:
             self._keypress_callbacks_dict[keycode] = callback
         return self
 
+    def attach_shift_tab_callback(self, callback):
+        """Attach a callback for Shift+Tab, registering all known platform key codes."""
+        for keycode in _SHIFT_TAB_ALIASES:
+            self._keypress_callbacks_dict[keycode] = callback
+        return self
+
     def toggle_keypress_callbacks(self, enable: bool | None = None):
         """Toggle keypress callbacks on/off"""
         self._enable_keypress_callbacks = not self._enable_keypress_callbacks if enable is None else enable
@@ -300,8 +306,10 @@ class KEY:
     ESC = 27
     ENTER = 13
     BACKSPACE = 8
+    BACKTAB = 11
     SPACEBAR = ord(" ")
     TAB = ord("\t")
+    SHIFT_TAB = 10001
 
     # Function keys (OpenCV waitKeyEx extended codes)
     WIN_F1 = 7340032
@@ -327,6 +335,15 @@ _ARROW_KEY_ALIASES = {
     KEY.DOWN_ARROW: (KEY.DOWN_ARROW, KEY.WIN_DOWN_ARROW, KEY.GTK_DOWN_ARROW),
 }
 
+# Shift+Tab (back-tab) extended waitKeyEx codes vary by platform/backend.
+_SHIFT_TAB_ALIASES = (
+    KEY.SHIFT_TAB,
+    KEY.BACKTAB,
+    655360,  # Windows OpenCV waitKeyEx (common)
+    983040,  # Windows alternate
+    1310720,  # Windows alternate
+)
+
 
 def read_waitkey(delay_ms: int) -> int:
     """
@@ -350,7 +367,7 @@ def normalize_waitkey(raw_keypress: int) -> int:
     if raw_keypress == -1:
         return -1
 
-    extended_arrow_map = {
+    extended_key_map = {
         KEY.WIN_LEFT_ARROW: KEY.LEFT_ARROW,
         KEY.WIN_UP_ARROW: KEY.UP_ARROW,
         KEY.WIN_RIGHT_ARROW: KEY.RIGHT_ARROW,
@@ -359,12 +376,18 @@ def normalize_waitkey(raw_keypress: int) -> int:
         KEY.GTK_UP_ARROW: KEY.UP_ARROW,
         KEY.GTK_RIGHT_ARROW: KEY.RIGHT_ARROW,
         KEY.GTK_DOWN_ARROW: KEY.DOWN_ARROW,
+        655360: KEY.SHIFT_TAB,
+        983040: KEY.SHIFT_TAB,
+        1310720: KEY.SHIFT_TAB,
     }
-    if raw_keypress in extended_arrow_map:
-        return extended_arrow_map[raw_keypress]
+    if raw_keypress in extended_key_map:
+        return extended_key_map[raw_keypress]
 
     low_byte = raw_keypress & 0xFF
-    if low_byte in extended_arrow_map.values():
+    if low_byte == KEY.BACKTAB:
+        return KEY.SHIFT_TAB
+
+    if low_byte in extended_key_map.values():
         return low_byte
 
     return low_byte

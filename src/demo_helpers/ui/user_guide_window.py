@@ -46,7 +46,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "Step 2 — Select an object slot (Object 1, Object 2, …; Up/Down or W/S).",
                 "Step 3 — Pause playback (Space). Prompt tools are disabled while the video plays.",
                 "Step 4 — Choose Hover, Box, FG Point, or BG Point; place prompts on the target.",
-                "Step 5 — Store Prompt (Tab or button). This writes prompts into the tracker memory bank.",
+                "Step 5 — Store Prompt (Enter or button, while paused). This writes prompts into the tracker memory bank.",
                 "Step 6 — Track: press Track or Space to play; masks update on each new frame.",
                 "Step 7 — Optional: Enable Recording during tracking, then Save Results to export TIF labels.",
                 "Repeat steps 2–5 for additional objects before you start tracking.",
@@ -61,7 +61,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "BG Point — Background clicks (exclude region).",
                 _bullets(
                     "C — Clear on-screen prompts only (does not remove stored tracker memory)",
-                    "Tab / Store Prompt — Save current interactive prompts to the selected object",
+                    "Enter / Store Prompt — Save current interactive prompts to the selected object (while paused)",
                 ),
                 "Store Prompt requirements:",
                 _bullets(
@@ -123,7 +123,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
             (
                 _bullets(
                     "Space — Play / pause",
-                    "A / D — Step one frame while paused",
+                    "Left / Right or A / D — Step one frame while paused",
                     "R — Reverse playback",
                     "Timeline slider — Scrub; masks clear while dragging; tracking refreshes on release if prompts exist",
                 ),
@@ -137,9 +137,9 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                     "H — Toggle this user guide (English / 中文)",
                     "F1 — Toggle keyboard shortcuts panel (OpenCV window)",
                     "Space — Play / pause",
-                    "Tab — Store Prompt",
+                    "Enter — Store Prompt (while paused)",
                     "C — Clear on-screen prompts",
-                    "← / → — Switch prompt tool",
+                    "Tab / Shift+Tab — Switch prompt tool (forward / back)",
                     "↑ / ↓ or W / S — Previous / next object",
                     "+ / - — Add / remove object slot",
                     "Mouse wheel (over object grid, 33+ objects) — Scroll object list",
@@ -202,7 +202,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "步骤 2 — 选择对象槽位（Object 1、Object 2…；↑/↓ 或 W/S）。",
                 "步骤 3 — 暂停播放（空格）。播放过程中无法使用提示工具。",
                 "步骤 4 — 选择 Hover、Box、前景点或背景点，在目标上标注。",
-                "步骤 5 — Store Prompt（Tab 或按钮），将提示写入追踪记忆库。",
+                "步骤 5 — Store Prompt（Enter 或按钮，暂停时），将提示写入追踪记忆库。",
                 "步骤 6 — 追踪：点击 Track 或空格播放；每到新帧自动更新掩膜。",
                 "步骤 7 — 可选：开启 Enable Recording 后，用 Save Results 导出 TIF 标签。",
                 "开始追踪前，可对多个对象重复步骤 2–5。",
@@ -217,7 +217,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "BG Point — 背景点（排除区域）。",
                 _bullets(
                     "C — 仅清除屏幕上的提示（不删除已存入追踪器的记忆）",
-                    "Tab / Store Prompt — 将当前交互提示保存到所选对象",
+                    "Enter / Store Prompt — 将当前交互提示保存到所选对象（暂停时）",
                 ),
                 "Store Prompt 条件：",
                 _bullets(
@@ -279,7 +279,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
             (
                 _bullets(
                     "空格 — 播放 / 暂停",
-                    "A / D — 暂停时单帧后退 / 前进",
+                    "← / → 或 A / D — 暂停时单帧后退 / 前进",
                     "R — 倒放",
                     "时间轴滑块 — 拖动浏览；拖动时掩膜清空，松手后若有提示则刷新追踪",
                 ),
@@ -293,9 +293,9 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                     "H — 打开/关闭本使用指南（中 / English）",
                     "F1 — 快捷键参考面板（OpenCV 窗口）",
                     "空格 — 播放 / 暂停",
-                    "Tab — Store Prompt",
+                    "Enter — Store Prompt（暂停时）",
                     "C — 清除屏幕提示",
-                    "← / → — 切换提示工具",
+                    "Tab / Shift+Tab — 切换提示工具（向前 / 向后）",
                     "↑ / ↓ 或 W / S — 上 / 下一个对象",
                     "+ / - — 增加 / 删除对象槽位",
                     "鼠标滚轮（对象网格上，超过 32 个时）— 滚动对象列表",

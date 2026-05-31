@@ -1,4 +1,4 @@
-# Micro Tracker 3 v1.4.1 (2026-05-29)
+# Micro Tracker 3 v1.4.2 (2026-05-31)
 # Install PyTorch first from https://pytorch.org/get-started/locally/
 # tkinter is required for the in-app user guide (H) and file dialogs (stdlib on Windows)
 
