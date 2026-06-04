@@ -223,7 +223,7 @@ class TextDrawer:
 
     # .................................................................................................................
 
-    def get_text_size(self, text, scale: float | None = None, thickness: int | None = None) -> [int, int, int]:
+    def get_text_size(self, text, scale: float | None = None, thickness: int | None = None) -> tuple[int, int, int]:
         """
         Helper used to check how big a piece of text will be when drawn
         Returns:

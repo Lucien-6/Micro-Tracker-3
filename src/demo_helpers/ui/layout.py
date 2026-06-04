@@ -99,7 +99,7 @@ class HStack(BaseCallback):
 
     # .................................................................................................................
 
-    def _get_height_and_width_without_hint(self) -> [int, int]:
+    def _get_height_and_width_without_hint(self) -> tuple[int, int]:
         """Set height to tallest child height and then calculate width from given height"""
         tallest_h = max(child._rdr.limits.min_h for child in self)
         w = self._get_width_given_height(tallest_h)
@@ -308,7 +308,7 @@ class VStack(BaseCallback):
 
     # .................................................................................................................
 
-    def _get_height_and_width_without_hint(self) -> [int, int]:
+    def _get_height_and_width_without_hint(self) -> tuple[int, int]:
         """When not given a size, render width to the widest child and sum of all child heights at this width"""
         widest_w = max(child._rdr.limits.min_w for child in self)
         h = self._get_height_given_width(widest_w)
@@ -592,7 +592,7 @@ class GridStack(BaseCallback):
 
     # .................................................................................................................
 
-    def _get_height_and_width_without_hint(self) -> [int, int]:
+    def _get_height_and_width_without_hint(self) -> tuple[int, int]:
         """Set height to the total of largest heights per row, width to the total largest widths per column"""
 
         # Set height based on largest heights per row
@@ -955,7 +955,7 @@ class ScrollableGridViewport(BaseCallback):
 
     # .................................................................................................................
 
-    def _get_height_and_width_without_hint(self) -> [int, int]:
+    def _get_height_and_width_without_hint(self) -> tuple[int, int]:
         if self._scroll_enabled:
             return self._viewport_height_px(), self._grid._rdr.limits.min_w
         return self._grid._get_height_and_width_without_hint()
@@ -1028,7 +1028,7 @@ class OverlayStack(BaseCallback):
 
     # .................................................................................................................
 
-    def _get_height_and_width_without_hint(self) -> [int, int]:
+    def _get_height_and_width_without_hint(self) -> tuple[int, int]:
         return self._base_item._get_height_and_width_without_hint()
 
     def _get_height_given_width(self, w) -> int:

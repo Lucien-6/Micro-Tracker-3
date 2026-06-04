@@ -54,11 +54,11 @@ class HistoryKeeper:
     def store(self, **key_value_kwargs):
         """Update and save history data"""
 
-        # Check if we can store the new value
+        # Check if we can store the new value (validate the dict we actually intend to write!)
         new_history_dict = {**self._history_dict, **key_value_kwargs}
         is_valid_json = False
         try:
-            json.dumps(self._history_dict)
+            json.dumps(new_history_dict)
             is_valid_json = True
         except TypeError:
             is_valid_json = False

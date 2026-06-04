@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-06-04
+
+### Added
+
+- **On-screen toast notifications** (`src/demo_helpers/ui/toast.py`) — Transient, non-blocking feedback for model/video load, prompt store/clear, object add/remove, history toggle, and **lost-target warnings**. Toasts are drawn **centered in the video display area** and fade out automatically. Errors and failures still use modal dialogs.
+- **Modal message dialogs** (`show_message_dialog` in `src/demo_helpers/loading.py`) — Error/warning popups for save and metric/overlay export failures.
+- **Ctrl+Z prompt undo** — Removes the most recently added foreground/background point or box for the active object (`PromptUndoManager`).
+- **Tracking analysis export** (`src/demo_helpers/analysis.py`) — Saved alongside the label sequence:
+  - `tracking_metrics.csv` — per-frame, per-object centroid, area, orientation angle (long axis of the fitted ellipse vs. +X, from image moments), velocity, and displacement.
+  - `tracking_msd.csv` — time-averaged Mean Squared Displacement per object.
+  - `tracking_overlay.mp4` — single overlay video with a uniquely colored contour per object and a fading ~20-frame trajectory. Trajectories are hidden once an object leaves the field of view.
+- **Export parameter dialog** (`ask_export_parameters`) — Prompts for **frame rate (fps)** and **pixel size (µm/pixel)** before export; the pixel size is remembered between sessions.
+- **Save progress window** (`src/demo_helpers/ui/progress.py`) — Live progress bar shown while saving label images and rendering metrics/overlay video.
+- **Expanded session persistence** (`.history`) — Now also restores display size, last save folder, **Enable History** state, `--objscore_threshold`, square/aspect sizing, and pixel size, when not overridden on the command line.
+- **CPU image-encoding LRU cache** (`src/demo_helpers/encode_cache.py`, `--encode_cache_size`, default 64) — Reuses image encodings to speed up scrubbing, frame stepping, and reverse playback.
+- **Reverse-playback frame buffer** (`--reverse_buffer_size`, default 120) — Buffers decoded frames for smoother reverse playback and stepping.
+
+### Fixed
+
+- **Model switch without a loaded video** — No longer crashes with `AttributeError: 'NoneType' object has no attribute 'pause'`; the playback reader is only paused when a video is loaded.
+
+### Notes
+
+- `tracking_overlay.mp4` and the metric CSVs are written only when a source video is available; metric units depend on the fps and µm/pixel values entered in the export dialog.
+
 ## [1.4.2] - 2026-05-31
 
 ### Changed
@@ -94,6 +119,7 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.5.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.5.0
 [1.4.2]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.2
 [1.4.1]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.1
 [1.4.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.0

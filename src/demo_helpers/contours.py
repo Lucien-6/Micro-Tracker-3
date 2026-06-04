@@ -45,7 +45,7 @@ class MaskContourData:
 
         # Force a single-channel channel mask, in case we don't get one (assuming HxWxC shape!)
         if mask_binary_uint8.ndim == 3:
-            assert mask_binary_uint8.shape[2] < mask_binary_uint8[1], "Mask error, expecting shape: HxWxC"
+            assert mask_binary_uint8.shape[2] < mask_binary_uint8.shape[1], "Mask error, expecting shape: HxWxC"
             mask_binary_uint8 = mask_binary_uint8[:, :, 0]
 
         # Generate outlines from the segmentation mask
@@ -334,7 +334,7 @@ def get_largest_contour_from_mask(
     minimum_contour_area_norm=None,
     normalize=True,
     simplification_eps=None,
-) -> [bool, ndarray]:
+) -> tuple[bool, ndarray]:
     """
     Helper used to get only the largest contour (by area) from a a given binary mask image.
 
@@ -395,7 +395,7 @@ def get_contours_from_mask(
     mask_binary_uint8,
     minimum_contour_area_norm=0,
     normalize=True,
-) -> [bool, tuple]:
+) -> tuple[bool, tuple]:
     """
     Function which takes in a binary black & white mask and returns contours around each independent 'blob'
     within the mask. Note that only the external-most contours are returned, without holes!
@@ -443,7 +443,7 @@ def get_contours_from_mask(
 # .....................................................................................................................
 
 
-def get_contours_containing_xy(contours_list, xy) -> [bool, list]:
+def get_contours_containing_xy(contours_list, xy) -> tuple[bool, list]:
     """Helper used to filter out contours that do not contain the given xy coordinate"""
     filtered_list = [contour for contour in contours_list if cv2.pointPolygonTest(contour, xy, False) > 0]
     have_results = len(filtered_list) > 0
@@ -453,7 +453,7 @@ def get_contours_containing_xy(contours_list, xy) -> [bool, list]:
 # .....................................................................................................................
 
 
-def get_largest_contour(contours_list, reference_shape=None) -> [bool, ndarray]:
+def get_largest_contour(contours_list, reference_shape=None) -> tuple[int, ndarray]:
     """
     Helper used to filter out only the largest contour from a list of contours
 

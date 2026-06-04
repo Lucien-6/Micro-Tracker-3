@@ -6,7 +6,7 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_sam](https://github.com/heyoeyo/muggled_sam); SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.4.2](CHANGELOG.md) (2026-05-31) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.5.0](CHANGELOG.md) (2026-06-04) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -18,8 +18,11 @@ Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_
 | **Tracking** | Temporal propagation via SAM memory encoder (prompt + frame history) |
 | **Lost-target policy** | Per-object stop on low object score (default); optional continued inference via `--keep_bad_objscores` |
 | **Multi-object** | Up to 255 independent object slots; scrollable two-column list (mouse wheel) when more than 32 |
-| **Playback** | Pause, play, reverse, frame stepping, and timeline scrubbing |
-| **Export** | Combined per-frame label masks as `00001.tif`, `00002.tif`, … |
+| **Playback** | Pause, play, reverse, frame stepping, and timeline scrubbing; CPU encode cache + reverse frame buffer for fast scrubbing/stepping |
+| **Export** | Combined per-frame label masks (`00001.tif`, …) plus **metrics CSV**, **MSD CSV**, and a multi-object **overlay video** |
+| **Analysis** | Per-frame centroid, area, orientation (fitted-ellipse long axis), velocity, displacement, and MSD |
+| **Feedback** | On-screen **toast** messages centered in the video; modal dialogs for errors; live **save progress** window |
+| **Editing** | **Ctrl+Z** undo for the last prompt; expanded session persistence (`.history`) |
 | **Models** | Auto-detects SAM 2, SAM 3, or SAM 3.1 weights (`.pt` / `.pth`) |
 | **Hardware** | CUDA, Apple MPS, or CPU; default bfloat16 for lower VRAM use |
 | **Help** | **H** — tkinter user guide (English / 中文); **F1** — keyboard shortcuts panel |
@@ -143,7 +146,7 @@ On first run, the app resolves the model from (in order):
 5. **Store Prompt** — Click **Store Prompt (Enter)** or press **Enter** while paused (requires FG/BG points or a box on the current frame; see [user guide](docs/USER_GUIDE.md)).
 6. **Track** — Press **Track** or Space to play forward; masks propagate automatically each frame. If a target is lost (low object score), tracking for that object stops by default until you move to an earlier frame or store new prompts.
 7. **Record** — Enable **Enable Recording** to buffer label frames in memory.
-8. **Export** — Click **Save Results** to write a TIF sequence to disk.
+8. **Export** — Click **Save Results**, confirm **frame rate** and **pixel size (µm/pixel)** in the export dialog, then the app writes the TIF label sequence plus the metrics CSV, MSD CSV, and overlay video. A progress window shows live status.
 
 Repeat steps 3–5 for additional objects before tracking.
 
@@ -161,6 +164,7 @@ Press **F1** inside the app for the full in-GUI reference. Summary:
 | `R` | Toggle reverse playback |
 | `Tab` / `Shift+Tab` | Switch prompt tool forward / backward (Hover / Box / FG / BG) |
 | `Enter` | Store current prompts to selected object (while paused) |
+| `Ctrl+Z` | Undo the last added prompt (FG/BG point or box) |
 | `C` | Clear on-screen prompts (not stored memory) |
 | `↑` / `↓` or `W` / `S` | Previous / next object slot |
 | `+` / `-` | Add / remove object slot |
@@ -189,6 +193,10 @@ python main.py [OPTIONS]
   --keep_bad_objscores        Keep inferencing after loss; masks still zeroed on low-score frames
   --keep_history_on_new_prompts
                               Retain frame history when adding new prompts
+  --encode_cache_size N       CPU LRU cache of image encodings for fast scrubbing/stepping/reverse
+                              (0 disables, default: 64)
+  --reverse_buffer_size N     Decoded-frame buffer for reverse playback / stepping
+                              (0 disables, default: 120)
 ```
 
 **Lost target (default):** On the first low-score frame, the app masks once, zeros the mask, and stops further inference for that object on that frame and later frames. Move the playhead before the loss frame or add new points/box and **Store Prompt** to resume. See [docs/USER_GUIDE.md](docs/USER_GUIDE.md#5-lost-targets-out-of-frame-defocus-occlusion).
@@ -207,12 +215,15 @@ When recording is enabled and results are saved, the app writes a folder named:
 
 ```text
 {video_basename}_MT-Results_{YYYYMMDD-HHMMSS}/
-├── 00001.tif
+├── 00001.tif               # 8-bit grayscale label images
 ├── 00002.tif
-└── ...
+├── ...
+├── tracking_metrics.csv    # per-frame, per-object metrics
+├── tracking_msd.csv        # time-averaged MSD per object
+└── tracking_overlay.mp4     # colored contours + fading trajectories (if a video is loaded)
 ```
 
-Each file is an **8-bit grayscale label image**:
+Each `*.tif` is an **8-bit grayscale label image**:
 
 - Pixel value **0** = background  
 - Pixel value **1** = Object 1  
@@ -221,7 +232,11 @@ Each file is an **8-bit grayscale label image**:
 
 Overlapping instances are resolved by **later objects overwriting earlier ones**. Frame order follows sorted frame indices, not necessarily consecutive video frame numbers.
 
-This format is compatible with common downstream tools (ImageJ, TrackMate, custom Python/MATLAB pipelines) for morphology and kinematics analysis.
+The label sequence is compatible with common downstream tools (ImageJ, TrackMate, custom Python/MATLAB pipelines). In addition, Micro Tracker 3 computes analysis-ready outputs directly:
+
+- **`tracking_metrics.csv`** — per frame and object: centroid (px and µm), area, orientation angle (long axis of the fitted ellipse vs. +X, derived from image moments), velocity, and displacement. Physical units use the **fps** and **µm/pixel** values entered in the export dialog.
+- **`tracking_msd.csv`** — time-averaged Mean Squared Displacement per object.
+- **`tracking_overlay.mp4`** — every object as a uniquely colored contour with a fading ~20-frame trajectory; a trajectory disappears once its object leaves the field of view.
 
 ---
 
@@ -231,7 +246,7 @@ This format is compatible with common downstream tools (ImageJ, TrackMate, custo
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.4.2)
+├── VERSION                   # Current release (1.5.0)
 ├── CHANGELOG.md
 ├── docs/
 │   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)
@@ -242,11 +257,13 @@ micro-tracker-3/
     ├── v2_sam/               # SAM 2 implementation
     ├── v3_sam/               # SAM 3 implementation
     ├── v3p1_sam/             # SAM 3.1 implementation
-    └── demo_helpers/         # UI, I/O, memory banks, saving
+    └── demo_helpers/         # UI, I/O, memory banks, saving, analysis
         ├── shared_ui_layout.py
         ├── video_data_storage.py
         ├── saving.py
-        └── ui/               # OpenCV widget toolkit, F1 shortcuts, H-key user guide (tkinter)
+        ├── analysis.py       # metrics / MSD CSV + overlay video export
+        ├── encode_cache.py   # CPU LRU cache of image encodings
+        └── ui/               # OpenCV widget toolkit, toast, progress, F1 shortcuts, H-key user guide (tkinter)
 ```
 
 ---

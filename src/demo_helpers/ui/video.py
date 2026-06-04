@@ -5,6 +5,8 @@
 # ---------------------------------------------------------------------------------------------------------------------
 # %% Imports
 
+from collections import OrderedDict
+
 import cv2
 
 from .base import BaseCallback
@@ -84,11 +86,80 @@ class LoopingVideoReader:
         self._frame_idx = 0
         self._pause_frame = self.scale_to_display_wh(first_frame) if self._need_resize else first_frame
 
+        # Decoded-frame buffer (used to avoid expensive re-seeking, e.g. during reverse playback)
+        # and a running record of which frame index the next vcap.read() will return.
+        self._frame_buffer: "OrderedDict[int, ndarray]" = OrderedDict()
+        self._frame_buffer_max = 0
+        self._decoder_pos = 0
+
     # .................................................................................................................
 
     def scale_to_display_wh(self, image) -> ndarray:
         """Helper used to scale a given image to a target display size (if configured)"""
         return cv2.resize(image, dsize=self._scale_wh)
+
+    # .................................................................................................................
+
+    def set_frame_buffer_size(self, num_frames: int):
+        """
+        Set the maximum number of decoded frames to keep buffered.
+        A larger buffer makes reverse playback / back-and-forth scrubbing smoother
+        (avoids re-seeking the video) at the cost of additional system memory.
+        Set to 0 to disable buffering.
+        """
+        self._frame_buffer_max = max(0, int(num_frames))
+        while len(self._frame_buffer) > self._frame_buffer_max:
+            self._frame_buffer.popitem(last=False)
+        return self
+
+    def clear_frame_buffer(self):
+        self._frame_buffer.clear()
+        return self
+
+    def _buffer_store(self, frame_idx: int, frame: ndarray) -> None:
+        if self._frame_buffer_max <= 0:
+            return
+        self._frame_buffer[frame_idx] = frame
+        self._frame_buffer.move_to_end(frame_idx)
+        while len(self._frame_buffer) > self._frame_buffer_max:
+            self._frame_buffer.popitem(last=False)
+
+    def _buffer_get(self, frame_idx: int) -> ndarray | None:
+        if self._frame_buffer_max <= 0 or frame_idx not in self._frame_buffer:
+            return None
+        self._frame_buffer.move_to_end(frame_idx)
+        return self._frame_buffer[frame_idx]
+
+    def _read_frame_at(self, frame_idx: int) -> ndarray | None:
+        """
+        Return the decoded (display-scaled) frame at the given index, using the
+        frame buffer when possible and only seeking the decoder when its position
+        does not already match the requested frame. Returns None if the frame
+        cannot be decoded.
+        """
+
+        # Serve from buffer without touching the decoder (keeps decoder position intact)
+        cached_frame = self._buffer_get(frame_idx)
+        if cached_frame is not None:
+            return cached_frame
+
+        # Only seek when the decoder isn't already positioned at the requested frame
+        if self._decoder_pos != frame_idx:
+            self._vcap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            self._decoder_pos = frame_idx
+
+        read_ok, frame = self._vcap.read()
+        if not read_ok:
+            return None
+        self._decoder_pos = frame_idx + 1
+
+        if self._need_resize:
+            frame = self.scale_to_display_wh(frame)
+        self._buffer_store(frame_idx, frame)
+
+        return frame
+
+    # .................................................................................................................
 
     def release(self):
         """Close access to video source"""
@@ -129,7 +200,7 @@ class LoopingVideoReader:
 
     def get_playback_position(self, normalized=True) -> int | float:
         """Returns playback position either as a frame index or a number between 0 and 1 (if normalized)"""
-        frame_idx = self._frame_idx if self._is_paused else int(self._vcap.get(cv2.CAP_PROP_POS_FRAMES))
+        frame_idx = self._frame_idx
         if normalized:
             return frame_idx / self._max_frame_idx if self._max_frame_idx > 0 else 0.0
         return int(frame_idx)
@@ -166,16 +237,19 @@ class LoopingVideoReader:
         frame_idx = round(position * self._max_frame_idx) if is_normalized else position
         frame_idx = max(min(frame_idx, self._max_frame_idx), 0)
 
-        self._vcap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         self._frame_idx = frame_idx
 
         # If we're paused, but set a new frame, then update the pause frame
         # -> This is important for paused 'timeline scrubbing' to work intuitively
         if self._is_paused:
-            ok_read, frame = self._vcap.read()
-            if ok_read and self._need_resize:
-                frame = self.scale_to_display_wh(frame)
-            self._pause_frame = frame if ok_read else self._pause_frame
+            frame = self._read_frame_at(frame_idx)
+            if frame is not None:
+                self._pause_frame = frame
+        else:
+            # Make sure the decoder will resume from the requested frame
+            if self._decoder_pos != frame_idx:
+                self._vcap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                self._decoder_pos = frame_idx
 
         return frame_idx
 
@@ -184,16 +258,31 @@ class LoopingVideoReader:
         return self._pause_frame.copy()
 
     def _pause_at_frame(self, frame_idx: int) -> tuple[bool, int, ndarray]:
-        """Seek to the given frame, enter pause state, and return the standard iterator tuple."""
+        """
+        Seek to the given frame, enter pause state, and return the standard iterator tuple.
 
-        self._frame_idx = max(0, min(frame_idx, self._max_frame_idx))
-        self._vcap.set(cv2.CAP_PROP_POS_FRAMES, self._frame_idx)
-        read_ok, frame = self._vcap.read()
-        assert read_ok, f"Error reading frame {self._frame_idx} of video ({self._video_path})"
-        if self._need_resize:
-            frame = self.scale_to_display_wh(frame)
-        self._pause_frame = frame
+        Some containers report more frames than are actually decodable (e.g. variable-frame-rate
+        or webm files), so a failed read is recovered by stepping back to the nearest readable
+        frame (and clamping the usable range) instead of crashing the application.
+        """
+
         self._is_paused = True
+        target_idx = max(0, min(frame_idx, self._max_frame_idx))
+        frame = None
+        while target_idx >= 0:
+            frame = self._read_frame_at(target_idx)
+            if frame is not None:
+                break
+            # Reported frame is not decodable -> shrink the usable range and try the previous frame
+            self._max_frame_idx = max(0, target_idx - 1)
+            target_idx -= 1
+
+        # If nothing at/below the target could be decoded, keep the last known-good frame
+        if frame is None:
+            return self._is_paused, self._frame_idx, self._pause_frame.copy()
+
+        self._frame_idx = target_idx
+        self._pause_frame = frame
         return self._is_paused, self._frame_idx, self._pause_frame.copy()
 
     # .................................................................................................................
@@ -202,11 +291,12 @@ class LoopingVideoReader:
         """Called when using this object in an iterator (e.g. for loops)"""
         if not self._vcap.isOpened():
             self._vcap = create_VideoCapture(self._video_path)
+            self._decoder_pos = 0
         return self
 
     # .................................................................................................................
 
-    def __next__(self) -> [bool, int, ndarray]:
+    def __next__(self) -> tuple[bool, int, ndarray]:
         """
         Iterator that provides frame data from a video capture object.
         Returns:
@@ -218,14 +308,16 @@ class LoopingVideoReader:
             return self._is_paused, self._frame_idx, self._pause_frame.copy()
 
         # Read next frame, or pause at the end instead of looping back to the beginning
-        self._frame_idx += 1
-        read_ok, frame = self._vcap.read()
-        if not read_ok:
+        target_idx = self._frame_idx + 1
+        if target_idx > self._max_frame_idx:
             return self._pause_at_frame(self._max_frame_idx)
 
-        # Scale frame for display & store in case we pause
-        if self._need_resize:
-            frame = self.scale_to_display_wh(frame)
+        frame = self._read_frame_at(target_idx)
+        if frame is None:
+            return self._pause_at_frame(self._max_frame_idx)
+
+        # Store the displayed frame in case we pause
+        self._frame_idx = target_idx
         self._pause_frame = frame
 
         return self._is_paused, self._frame_idx, self._pause_frame.copy()
@@ -288,29 +380,20 @@ class ReversibleLoopingVideoReader(LoopingVideoReader):
         if self._is_paused:
             return self._is_paused, self._frame_idx, self._pause_frame.copy()
 
-        if self._is_reversed:
+        # Forward playback is handled by the (buffer-aware) parent implementation
+        if not self._is_reversed:
+            return super().__next__()
 
-            # Step backward, or pause at the first frame instead of looping to the end
-            if self._frame_idx <= 0:
-                return self._pause_at_frame(0)
+        # Step backward, or pause at the first frame instead of looping to the end
+        if self._frame_idx <= 0:
+            return self._pause_at_frame(0)
 
-            self._frame_idx -= 1
-            self._vcap.set(cv2.CAP_PROP_POS_FRAMES, self._frame_idx)
-            read_ok, frame = self._vcap.read()
-            if not read_ok:
-                return self._pause_at_frame(0)
+        target_idx = self._frame_idx - 1
+        frame = self._read_frame_at(target_idx)
+        if frame is None:
+            return self._pause_at_frame(0)
 
-        else:
-
-            # Read next frame, or pause at the end instead of looping back to the beginning
-            self._frame_idx += 1
-            read_ok, frame = self._vcap.read()
-            if not read_ok:
-                return self._pause_at_frame(self._max_frame_idx)
-
-        # Scale frame for display & store in case we pause
-        if self._need_resize:
-            frame = self.scale_to_display_wh(frame)
+        self._frame_idx = target_idx
         self._pause_frame = frame
 
         return self._is_paused, self._frame_idx, self._pause_frame.copy()

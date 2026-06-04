@@ -1,7 +1,7 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.4.2  
-**Last updated:** 2026-05-31  
+**Version:** 1.5.0  
+**Last updated:** 2026-06-04  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
 This document mirrors the in-app guide (press **H** while the main window is focused; switch **English / 中文** in the guide window). For installation and repository layout, see [README.md](../README.md).
@@ -50,6 +50,7 @@ Repeat steps 2–5 for additional objects before tracking.
 | **BG Point** | Background clicks (exclude region). |
 
 - **Tab / Shift+Tab** — Switch prompt tool forward / backward (Hover → Box → FG → BG).
+- **Ctrl+Z** — Undo the most recently added prompt (one FG/BG point or box) for the active object, before it is stored.
 - **C** — Clears on-screen prompts only (does not remove stored tracker memory).
 - **Enter / Store Prompt** — Saves current interactive prompts to the **selected** object slot (while paused only).
 
@@ -123,6 +124,23 @@ Click targets are kept in sync with the visible buttons after each UI redraw and
 
 ---
 
+## 6c. Feedback, undo, and session memory
+
+- **Toast notifications** — Short, non-blocking messages appear **centered in the video area** for actions such as model/video load, store/clear prompts, add/remove object, history toggle, and **lost-target warnings**. They fade out automatically.
+- **Error dialogs** — Failures (e.g. could not save, metric/overlay export failed) appear as modal popups so they are not missed.
+- **Undo (Ctrl+Z)** — Removes the most recently added FG/BG point or box for the active object before it is stored. Repeat to step back through the prompts.
+- **Session memory (`.history`)** — In addition to last model/video paths, the app restores **display size**, **last save folder**, **Enable History** state, `--objscore_threshold`, square/aspect sizing, and **pixel size (µm/pixel)** when these are not overridden on the command line.
+
+---
+
+## 6d. Performance (scrubbing and reverse playback)
+
+- **Encode cache** (`--encode_cache_size`, default 64) — Image encodings are cached on the CPU and reused, so scrubbing, frame stepping, and reverse playback avoid re-encoding visited frames.
+- **Reverse frame buffer** (`--reverse_buffer_size`, default 120) — Decoded frames are buffered for smoother reverse playback and stepping.
+- Set either option to `0` to disable it (lower memory use, slower revisits).
+
+---
+
 ## 7. Playback and timeline
 
 | Control | Action |
@@ -147,6 +165,7 @@ Press **F1** in the main window for the full shortcut panel. Common bindings:
 | F1 | Keyboard shortcuts panel |
 | Space | Play / pause |
 | Enter | Store Prompt (while paused) |
+| Ctrl+Z | Undo last added prompt (FG/BG point or box) |
 | Tab / Shift+Tab | Switch prompt tool forward / backward |
 | C | Clear on-screen prompts |
 | ← / → or A / D | Step one frame (paused) |
@@ -163,9 +182,21 @@ Press **F1** in the main window for the full shortcut panel. Common bindings:
 
 1. Enable **Enable Recording** during tracking.
 2. Click **Save Results** — choose a folder.
-3. Output folder: `{video_basename}_MT-Results_{YYYYMMDD-HHMMSS}/` with `00001.tif`, `00002.tif`, …
+3. In the **export parameter dialog**, confirm the **frame rate (fps)** and **pixel size (µm/pixel)**. The pixel size is remembered for the next session.
+4. A **progress window** shows live status while label images are written and metrics/overlay are rendered.
 
-Only frames visited while recording are saved. Lost objects contribute **background (0)** on frames where their mask is zero.
+Output folder: `{video_basename}_MT-Results_{YYYYMMDD-HHMMSS}/`
+
+| File | Contents |
+|------|----------|
+| `00001.tif`, `00002.tif`, … | 8-bit grayscale label images (0 = background, N = Object N). |
+| `tracking_metrics.csv` | Per frame and object: centroid (px and µm), area, orientation angle (long axis of the fitted ellipse vs. +X, from image moments), velocity, displacement. |
+| `tracking_msd.csv` | Time-averaged Mean Squared Displacement per object. |
+| `tracking_overlay.mp4` | One overlay video: each object drawn with a unique contour color and a fading ~20-frame trajectory. Written only when a source video is loaded. |
+
+Only frames visited while recording are saved. Lost objects contribute **background (0)** on frames where their mask is zero. In the overlay video, an object's trajectory is shown only while it is in view; once the object leaves the field of view, its trajectory disappears.
+
+Physical units (µm, µm/s, µm²) depend on the fps and µm/pixel values you enter; centroid is also reported in pixels.
 
 ---
 
@@ -186,6 +217,8 @@ python main.py [OPTIONS]
   --keep_bad_objscores        Keep inferencing after loss (masks still zeroed)
   --keep_history_on_new_prompts
                               Retain frame history when adding new prompts
+  --encode_cache_size N       CPU encode cache size (0 disables, default 64)
+  --reverse_buffer_size N     Reverse-playback frame buffer (0 disables, default 120)
 ```
 
 **In-app (recommended):** Press **H** for the tkinter user guide (English / 中文, non-modal).  

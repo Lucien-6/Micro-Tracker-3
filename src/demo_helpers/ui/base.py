@@ -223,6 +223,11 @@ class BaseCallback:
     def is_hovered(self) -> bool:
         return self._cb_state.hovered
 
+    def get_region_xyxy(self) -> tuple[int, int, int, int]:
+        """Return this element's most-recent rendered pixel bounds (x1, y1, x2, y2)."""
+        r = self._cb_region
+        return (r.x1, r.y1, r.x2, r.y2)
+
     def on_move(self, cbxy: CBEventXY, cbflags: CBEventFlags) -> None:
         return
 
@@ -411,7 +416,7 @@ class BaseCallback:
         """Function used to communicate how tall an element will be, if asked to render to a given width"""
         return self._rdr.limits.min_h
 
-    def _get_height_and_width_without_hint(self) -> [int, int]:
+    def _get_height_and_width_without_hint(self) -> tuple[int, int]:
         """Function used to communicate how wide & tall an element will be, if no size is specified"""
         return self._rdr.limits.min_h, self._rdr.limits.min_w
 

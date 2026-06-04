@@ -37,6 +37,7 @@ SHORTCUT_SECTIONS = (
         (145, 160, 90),
         (
             ("Tab / Shift+Tab", "Switch Hover / Box / FG / BG tool (forward / back)"),
+            ("Ctrl+Z", "Undo last added prompt (FG/BG point or box)"),
             ("C", "Clear on-screen prompts (not stored memory)"),
             ("Enter", "Store current prompts to selected object (while paused)"),
             ("Hover + move", "Live mask preview (no stored prompts)"),
@@ -143,7 +144,7 @@ def _render_shortcuts_panel() -> np.ndarray:
     header_roi = img[header_top:header_bottom, header_pad_x : panel_w - header_pad_x]
     title_drawer.xy_norm(header_roi, "Keyboard Shortcuts", (0.5, 0.36))
     subtitle_drawer.xy_norm(
-        header_roi, "Micro Tracker 3 v1.4.2  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
+        header_roi, "Micro Tracker 3 v1.5.0  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
     )
 
     y = header_bottom + 10

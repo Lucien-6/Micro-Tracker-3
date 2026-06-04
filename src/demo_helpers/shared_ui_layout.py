@@ -14,8 +14,6 @@ from .ui.overlays import HoverOverlay, BoxSelectOverlay, PointSelectOverlay, Dra
 from .ui.images import ExpandingImage
 from .ui.base import force_same_max_height, force_same_min_height
 
-import cv2
-import numpy as np
 import torch.nn as nn
 
 # For type hints
@@ -302,50 +300,6 @@ class PromptUIControl(BaseUIControl):
             self.elems.olays.clear_all(flag_is_changed=True)
 
         return read_prompts(self.elems.olays, self.elems.tools, self.elems.tools_constraint)
-
-    # .................................................................................................................
-
-
-class ReusableBaseImage:
-    """
-    Convenience class, used to manage a re-usable (static) image
-    that is re-sized to a target display size from an original
-    image that is assumed to be much larger.
-    This can help reduce cpu load since we avoid using
-    (and repeatedly downscaling) the original image which may
-    be much larger/heavier to work with!
-    """
-
-    # .................................................................................................................
-
-    def __init__(self, full_image_bgr: ndarray):
-
-        # Initialize state values
-        self._full_img = self._disp_img = self._prev_h = self._prev_w = None
-        self.set_new_image(full_image_bgr)
-
-    def set_new_image(self, new_image_bgr: ndarray):
-        """
-        Store a new image to be cached. This isn't expected to happen often!
-        (setting the image frequently defeats the purpose of caching)
-        """
-
-        self._full_img = new_image_bgr
-        self._disp_img = new_image_bgr.copy()
-        self._prev_h, self._prev_w = new_image_bgr.shape[0:2]
-
-        return self
-
-    def regenerate(self, new_display_hw):
-        """Resizes the original input image to the given display size or re-uses a cached copy at the given size"""
-
-        # Resize original image to given display size and store for re-use
-        disp_h, disp_w = new_display_hw
-        if disp_h != self._prev_h or disp_w != self._prev_w:
-            self._disp_img = cv2.resize(self._full_img, dsize=(disp_w, disp_h))
-            prev_disp_h, prev_disp_w = self._disp_img.shape[0:2]
-
-        return self._disp_img
 
     # .................................................................................................................
 

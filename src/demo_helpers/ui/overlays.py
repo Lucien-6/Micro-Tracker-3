@@ -455,6 +455,22 @@ class PointSelectOverlay(BaseOverlay):
 
     # .................................................................................................................
 
+    def num_points(self) -> int:
+        """Number of committed points (excludes any transient hover preview point)"""
+        return len(self._xy_norm_list)
+
+    # .................................................................................................................
+
+    def remove_last(self) -> None | tuple[float, float]:
+        """Remove and return the most recently added point, if any"""
+        if len(self._xy_norm_list) == 0:
+            return None
+        removed_xy_norm = self._xy_norm_list.pop()
+        self._is_changed = True
+        return removed_xy_norm
+
+    # .................................................................................................................
+
     def remove_closest(self, xy_norm, frame_hw=None) -> None | tuple[float, float]:
 
         # Can't remove points if there aren't any!
@@ -627,6 +643,22 @@ class BoxSelectOverlay(BaseOverlay):
         self._is_changed = True
 
         return self
+
+    # .................................................................................................................
+
+    def num_boxes(self) -> int:
+        """Number of committed boxes (excludes any in-progress box being drawn)"""
+        return len(self._xy1xy2_norm_list)
+
+    # .................................................................................................................
+
+    def remove_last(self) -> None | tuple:
+        """Remove and return the most recently added box, if any"""
+        if len(self._xy1xy2_norm_list) == 0:
+            return None
+        removed_box = self._xy1xy2_norm_list.pop()
+        self._is_changed = True
+        return removed_box
 
     # .................................................................................................................
 
