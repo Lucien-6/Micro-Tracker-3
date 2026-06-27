@@ -59,6 +59,12 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "Box — Drag a rectangle around the target.",
                 "FG Point — Foreground clicks (include region).",
                 "BG Point — Background clicks (exclude region).",
+                "Mouse interactions (per tool):",
+                _bullets(
+                    "Hover — Move: live mask preview. L-click: add an FG point (always appends) and switch to FG. R-click: add a BG point (always appends) and switch to BG. Shift has no effect in Hover.",
+                    "FG / BG — L-click: if no points yet, place the first one; otherwise REPLACE the last point. Shift+L-click: APPEND a new point (use this for multi-point prompts). R-click: delete the point nearest to the click (shift has no effect).",
+                    "Box — Drag: REPLACE the last box with the new one. Shift+drag: APPEND a new box (use this for multi-box prompts). R-click: delete the box whose corner is nearest to the click. L-click without dragging: discards the last box without adding a new one (avoid).",
+                ),
                 _bullets(
                     "Ctrl+Z — Undo the most recently added FG/BG point or box (before storing)",
                     "C — Clear on-screen prompts only (does not remove stored tracker memory)",
@@ -226,6 +232,12 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "Box — 拖拽矩形框选目标。",
                 "FG Point — 前景点（包含区域）。",
                 "BG Point — 背景点（排除区域）。",
+                "各工具的鼠标交互（详细）：",
+                _bullets(
+                    "Hover — 移动：实时掩膜预览。左键：追加 1 个前景点并切到 FG 工具（始终追加）。右键：追加 1 个背景点并切到 BG 工具（始终追加）。Hover 工具下 Shift 无效。",
+                    "FG / BG — 左键：若无点则放置第一个点；否则替换最后一个点。Shift+左键：追加新点（多点提示请用此方式）。右键：删除离点击位置最近的点（Shift 无效）。",
+                    "Box — 拖拽：用新框替换最近一个框。Shift+拖拽：追加新框（多框提示请用此方式）。右键：删除离点击位置最近角点所属的框。仅左键点击不拖动：会丢弃最近框且不新增（请避免）。",
+                ),
                 _bullets(
                     "Ctrl+Z — 撤销最近添加的一个前/背景点或框（Store 之前）",
                     "C — 仅清除屏幕上的提示（不删除已存入追踪器的记忆）",

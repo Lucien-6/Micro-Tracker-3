@@ -47,10 +47,16 @@ SHORTCUT_SECTIONS = (
         "Mouse Prompts",
         (110, 175, 145),
         (
-            ("Hover L-click", "Add foreground point, switch to FG tool"),
-            ("Hover R-click", "Add background point, switch to BG tool"),
-            ("Box tool", "Drag to draw a box prompt"),
-            ("FG / BG tool", "Click to place prompt points"),
+            ("Hover L-click", "Add FG point (always appends) + switch to FG"),
+            ("Hover R-click", "Add BG point (always appends) + switch to BG"),
+            ("Hover move", "Live mask preview (no stored prompts yet)"),
+            ("FG/BG L-click", "Replace last point (or place first one)"),
+            ("FG/BG Shift+L", "Append a new point (multi-point prompts)"),
+            ("FG/BG R-click", "Delete the point nearest to the click"),
+            ("Box drag", "Replace last box with the new box"),
+            ("Box Shift+drag", "Append a new box (multi-box prompts)"),
+            ("Box R-click", "Delete the box whose corner is nearest"),
+            ("Box L-click only", "Discards the last box (no new box drawn)"),
             ("Middle-click", "Select object under cursor (tracked masks)"),
         ),
     ),
@@ -70,7 +76,7 @@ SHORTCUT_SECTIONS = (
         (130, 95, 165),
         (
             ("[ / ]", "Zoom display out / in"),
-            ("H", "Toggle user guide (English / 中文)"),
+            ("H", "Toggle user guide (English / Chinese)"),
             ("F1", "Toggle this shortcuts window"),
             ("Q / Esc", "Quit application"),
         ),
@@ -144,7 +150,7 @@ def _render_shortcuts_panel() -> np.ndarray:
     header_roi = img[header_top:header_bottom, header_pad_x : panel_w - header_pad_x]
     title_drawer.xy_norm(header_roi, "Keyboard Shortcuts", (0.5, 0.36))
     subtitle_drawer.xy_norm(
-        header_roi, "Micro Tracker 3 v1.5.0  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
+        header_roi, "Micro Tracker 3 v1.5.1  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
     )
 
     y = header_bottom + 10

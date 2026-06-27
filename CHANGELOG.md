@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-06-27
+
+### Changed
+
+- **Mouse interaction documentation** — Accurately documented the per-tool effect of left/right clicks, Shift modifiers, and drag for all three prompt tools (Hover / FG-BG / Box). The previous wording (e.g. "Click to place prompt points") was ambiguous and did not reflect the actual overlay behavior.
+  - **Hover** — Left/right clicks always **append** an FG/BG point and switch to the corresponding tool. Shift has no effect in Hover.
+  - **FG / BG** — Plain left-click **replaces the last point** (or places the first one); **Shift + left-click appends** a new point (required for multi-point prompts). Right-click deletes the point nearest to the click (Shift-independent).
+  - **Box** — Plain left-drag **replaces the last box**; **Shift + left-drag appends** a new box (required for multi-box prompts). Right-click deletes the box whose corner is nearest. A left-click without dragging discards the last box without adding a new one (avoid).
+- **Updated in three places** for consistency:
+  - `src/demo_helpers/ui/shortcuts_help.py` — F1 shortcuts panel "Mouse Prompts" section expanded from 5 to 11 entries.
+  - `src/demo_helpers/ui/user_guide_window.py` — In-app user guide (H) section 3, both English and 中文, now lists per-tool mouse behavior.
+  - `docs/USER_GUIDE.md` — Section 3 now includes a full "Mouse interactions per tool" table plus notes on right-click drag semantics, FG/BG left-drag (no intermediate preview), and the auto-switch-back-to-Hover rule (applies to FG/BG only, not Box).
+
+### Fixed
+
+- **Auto-switch-to-Hover note corrected for Box tool** — The previous draft of the new docs over-generalized the auto-switch behavior. Code only auto-switches back to Hover when FG/BG points are removed (`if fg_prompt_changed or bg_prompt_changed:` in `read_prompts`); deleting the last box in the Box tool leaves you on the Box tool. The Markdown note now states this explicitly.
+
+### Notes
+
+- No code logic changed in this release; only documentation strings and Markdown content were updated to match the existing overlay implementations in `src/demo_helpers/ui/overlays.py` and `src/demo_helpers/shared_ui_layout.py`.
+
 ## [1.5.0] - 2026-06-04
 
 ### Added
@@ -119,6 +140,7 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.5.1]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.5.1
 [1.5.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.5.0
 [1.4.2]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.2
 [1.4.1]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.1

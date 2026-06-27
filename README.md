@@ -6,7 +6,7 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_sam](https://github.com/heyoeyo/muggled_sam); SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.5.0](CHANGELOG.md) (2026-06-04) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.5.1](CHANGELOG.md) (2026-06-27) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -246,7 +246,7 @@ The label sequence is compatible with common downstream tools (ImageJ, TrackMate
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.5.0)
+├── VERSION                   # Current release (1.5.1)
 ├── CHANGELOG.md
 ├── docs/
 │   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)

@@ -1,7 +1,7 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.5.0  
-**Last updated:** 2026-06-04  
+**Version:** 1.5.1  
+**Last updated:** 2026-06-27  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
 This document mirrors the in-app guide (press **H** while the main window is focused; switch **English / 中文** in the guide window). For installation and repository layout, see [README.md](../README.md).
@@ -48,6 +48,29 @@ Repeat steps 2–5 for additional objects before tracking.
 | **Box** | Drag a rectangle around the target. |
 | **FG Point** | Foreground clicks (include region). |
 | **BG Point** | Background clicks (exclude region). |
+
+### Mouse interactions per tool
+
+The effect of left/right clicks and Shift depends on the active tool. Only the selected tool's overlay responds; other tools ignore mouse input.
+
+| Tool | Input | Effect |
+|------|-------|--------|
+| **Hover** | Move | Live mask preview at the cursor (only when the slot has no stored prompts). |
+| **Hover** | Left-click | **Append** one FG point and switch to the FG tool. Shift has no effect. |
+| **Hover** | Right-click | **Append** one BG point and switch to the BG tool. Shift has no effect. |
+| **FG / BG** | Left-click | If no points exist, place the first one. Otherwise **replace the last point** (moves it to the click position). |
+| **FG / BG** | Shift + Left-click | **Append** a new point. Use this to build multi-point prompts (e.g. 1 FG + N BG). |
+| **FG / BG** | Right-click | **Delete** the point nearest to the click (Euclidean distance, in pixels). Shift has no effect. |
+| **Box** | Left-drag | **Replace** the last box with the newly drawn box. |
+| **Box** | Shift + Left-drag | **Append** a new box. Use this for multi-box prompts. |
+| **Box** | Right-click | **Delete** the box whose corner is nearest to the click. Shift has no effect. |
+| **Box** | Left-click without dragging | Discards the last box and adds nothing (the new box is too small to be kept). Avoid this input. |
+| Any | Middle-click | Select the object under the cursor (operates on tracked masks, independent of the prompt tool). |
+
+Notes:
+- Right-click drag is treated as a right-click (release inside the region); there is no separate drag semantic for right-button actions.
+- For FG/BG tools, left-drag has no intermediate preview — the point is applied on release using the rules above.
+- When all FG/BG points are removed (e.g. by right-click in the FG/BG tool), the tool auto-switches back to Hover. Removing the last box in the Box tool does **not** auto-switch — you stay on the Box tool.
 
 - **Tab / Shift+Tab** — Switch prompt tool forward / backward (Hover → Box → FG → BG).
 - **Ctrl+Z** — Undo the most recently added prompt (one FG/BG point or box) for the active object, before it is stored.
