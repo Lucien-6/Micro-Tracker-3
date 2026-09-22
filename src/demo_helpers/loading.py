@@ -142,13 +142,135 @@ def pick_model_file(file_dunder, current_path: str | None = None) -> str | None:
 
 
 def pick_video_file(current_path: str | None = None) -> str | None:
-    """Browse for a video file."""
+    """Browse for a video file, TIFF stack, or still image."""
 
     return pick_file_path(
-        "Select video file",
-        [("Video files", "*.mp4 *.avi *.mov *.mkv *.webm"), ("All files", "*.*")],
+        "Select video or image",
+        [
+            ("Video files", "*.mp4 *.avi *.mov *.mkv *.webm"),
+            ("Image stacks and stills", "*.tif *.tiff *.png *.jpg *.jpeg *.bmp *.webp"),
+            ("All files", "*.*"),
+        ],
         current_path,
     )
+
+
+def pick_image_folder(current_path: str | None = None) -> str | None:
+    """Browse for a folder of still images, in filename order."""
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError:
+        print("", "Warning: tkinter unavailable, cannot open folder picker.", sep="\n", flush=True)
+        return None
+
+    initialdir = None
+    if current_path is not None:
+        current_path = clean_path_str(current_path)
+        if osp.isdir(current_path):
+            initialdir = current_path
+        elif osp.isfile(current_path):
+            initialdir = osp.dirname(current_path)
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    selected_path = filedialog.askdirectory(title="Select image sequence folder", initialdir=initialdir)
+    root.destroy()
+
+    selected_path = clean_path_str(selected_path)
+    if selected_path == "" or not osp.isdir(selected_path):
+        return None
+    return selected_path
+
+
+def pick_frame_source(current_path: str | None = None) -> str | None:
+    """
+    Ask whether to open a video/TIFF file or a folder of stills, then show that picker.
+
+    Returns None if the user cancels.
+    """
+
+    try:
+        import tkinter as tk
+    except ImportError:
+        return pick_video_file(current_path)
+
+    choice: dict[str, str] = {}
+    root = tk.Tk()
+    root.title("Open frames")
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+    tk.Label(root, text="Open a video, a TIFF stack, or a folder of still images.").grid(
+        row=0, column=0, columnspan=2, padx=12, pady=(12, 8)
+    )
+
+    def choose(kind: str):
+        choice["kind"] = kind
+        root.destroy()
+
+    button_row = tk.Frame(root)
+    button_row.grid(row=1, column=0, columnspan=2, pady=(0, 12))
+    tk.Button(button_row, text="Video or TIFF file", width=18, command=lambda: choose("file")).pack(side="left", padx=6)
+    tk.Button(button_row, text="Image folder", width=18, command=lambda: choose("folder")).pack(side="left", padx=6)
+    root.bind("<Escape>", lambda _event: choose("cancel"))
+    root.mainloop()
+
+    kind = choice.get("kind")
+    if kind == "folder":
+        return pick_image_folder(current_path)
+    if kind == "file":
+        return pick_video_file(current_path)
+    return None
+
+
+def resolve_startup_settings(
+    display_size_arg: int | None,
+    objscore_arg: float | None,
+    use_aspect_ratio: bool,
+    force_square: bool,
+    default_display_size: int,
+    default_objscore: float,
+    history_display: int | None,
+    history_objscore: float | None,
+    history_square: bool | None,
+) -> tuple[int, float, bool]:
+    """
+    Resolve display size, object-score threshold, and square sizing.
+
+    A value passed on the command line is used as given, including the built-in
+    default (0.0, 900, or an explicit square/aspect choice). History is used
+    only when that setting was omitted.
+    """
+
+    if force_square and use_aspect_ratio:
+        raise ValueError("Use only one of --square and --use_aspect_ratio.")
+
+    if display_size_arg is None:
+        display_size = default_display_size
+        if isinstance(history_display, int) and history_display > 0:
+            display_size = history_display
+    else:
+        display_size = int(display_size_arg)
+
+    if objscore_arg is None:
+        objscore = float(default_objscore)
+        if isinstance(history_objscore, (int, float)):
+            objscore = float(history_objscore)
+    else:
+        objscore = float(objscore_arg)
+
+    if force_square:
+        use_square = True
+    elif use_aspect_ratio:
+        use_square = False
+    elif isinstance(history_square, bool):
+        use_square = history_square
+    else:
+        use_square = True
+
+    return display_size, objscore, use_square
 
 
 # .....................................................................................................................

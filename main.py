@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.5.1"
+__version__ = "1.6.0"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -29,7 +29,6 @@ from src.demo_helpers.ui.window import DisplayWindow, KEY
 from src.demo_helpers.ui.shortcuts_help import ShortcutsHelpWindow
 from src.demo_helpers.ui.user_guide_window import UserGuideWindow
 from src.demo_helpers.ui.video import (
-    ReversibleLoopingVideoReader,
     LoopingVideoPlaybackSlider,
     ValueChangeTracker,
 )
@@ -45,11 +44,14 @@ from src.demo_helpers.shared_ui_layout import PromptUIControl, PromptUI
 
 from src.demo_helpers.history_keeper import HistoryKeeper
 from src.demo_helpers.encode_cache import EncodedImageCache
+from src.demo_helpers.exclusive_masks import resolve_overlapping_masks, suppress_lost_pixels
+from src.demo_helpers.image_sequence import open_frame_source
 from src.demo_helpers.loading import (
     clean_path_str,
     resolve_default_model_path,
+    resolve_startup_settings,
     pick_model_file,
-    pick_video_file,
+    pick_frame_source,
     pick_save_folder,
     ask_save_unsaved_results,
     ask_export_parameters,
@@ -60,6 +62,7 @@ from src.demo_helpers.contours import get_contours_from_mask
 from src.demo_helpers.video_data_storage import SAMVideoMemoryBank
 from src.demo_helpers.saving import (
     build_combined_label_image,
+    load_saved_label_frames,
     make_mt_results_folder_name,
     save_tracking_label_tif_sequence,
 )
@@ -182,7 +185,7 @@ def create_placeholder_frame(h: int = 480, w: int = 640) -> np.ndarray:
 
     put_text_centered(img, "No Video Loaded", cy + card_h // 10, 0.78, (210, 205, 225), 1)
     put_text_centered(img, "Click Video above to browse", cy + card_h // 10 + 38, 0.52, (165, 175, 200), 1)
-    put_text_centered(img, "MP4  AVI  MOV  MKV  WEBM", y2 - 28, 0.42, (120, 130, 155), 1)
+    put_text_centered(img, "MP4  AVI  TIFF  IMAGE FOLDER", y2 - 28, 0.42, (120, 130, 155), 1)
 
     return img
 
@@ -265,6 +268,11 @@ def apply_zero_tracking_mask(obj_mgr, objidx: int) -> None:
     obj_mgr.maskresults_list[objidx].update(zero_preds, maskresult.idx, maskresult.objscore)
 
 
+def playback_direction(reverse_video: bool) -> int:
+    """+1 when playback moves toward later frames, -1 when it moves backward."""
+    return -1 if reverse_video else 1
+
+
 def track_single_object_at_frame(
     objidx: int,
     frame_idx: int,
@@ -275,6 +283,7 @@ def track_single_object_at_frame(
     keep_tracking_after_loss: bool,
     is_trackhistory_enabled: bool,
     lost_objects_out: list | None = None,
+    frame_direction: int = 1,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, float | None]:
     """Run video masking for one object slot, or zero its mask if tracking is stopped at this frame."""
     memory = obj_mgr.memory_list[objidx]
@@ -286,13 +295,15 @@ def track_single_object_at_frame(
         apply_zero_tracking_mask(obj_mgr, objidx)
         return None, None, None
 
+    # Drop frame memory before inference when this frame does not continue the chain.
+    chain = memory.begin_frame(frame_idx, frame_direction)
     mask_preds, iou_preds, obj_ptr, obj_score = track_model.step_video_masking(
         encoded_img, **memory.to_dict(), return_best_only=False
     )
-    best_mask_idx = iou_preds.argmax(dim=-1)
     obj_score_float = float(obj_score)
     tracked_mask_idx = get_best_mask_index(iou_preds)
 
+    encode_memory = False
     if obj_score_float < object_score_threshold:
         mask_preds = mask_preds * 0.0
         if not keep_tracking_after_loss:
@@ -300,13 +311,22 @@ def track_single_object_at_frame(
             memory.set_tracking_stop_frame(frame_idx)
             if lost_objects_out is not None and not was_already_stopped:
                 lost_objects_out.append(objidx)
-    elif is_trackhistory_enabled:
-        mem_enc = track_model.encode_frame_memory(
-            encoded_img, mask_preds, obj_ptr, obj_score, mask_index=best_mask_idx
-        )
-        memory.store_frame_result(mem_enc)
+    elif is_trackhistory_enabled and chain != "same":
+        encode_memory = True
 
     obj_mgr.maskresults_list[objidx].update(mask_preds, tracked_mask_idx, obj_score_float)
+    memory.note_playhead(frame_idx, frame_direction)
+    if encode_memory:
+        obj_mgr.pending_memory.append(
+            {
+                "objidx": objidx,
+                "obj_ptr": obj_ptr,
+                "obj_score": obj_score,
+                "mask_index": tracked_mask_idx,
+                "frame_idx": int(frame_idx),
+                "direction": int(frame_direction),
+            }
+        )
     return mask_preds, iou_preds, obj_score_float
 
 
@@ -319,6 +339,7 @@ def run_multi_object_tracking(
     keep_tracking_after_loss,
     is_trackhistory_enabled,
     lost_objects_out: list | None = None,
+    frame_direction: int = 1,
 ) -> None:
     """Run video masking for every object that has stored prompts."""
     for objidx in obj_mgr.objiter:
@@ -332,14 +353,79 @@ def run_multi_object_tracking(
             keep_tracking_after_loss,
             is_trackhistory_enabled,
             lost_objects_out,
+            frame_direction,
         )
 
 
-def notify_lost_objects(toast, lost_objects) -> None:
+def refresh_exclusive_masks(obj_mgr, uictrl, frame_hw) -> None:
+    """Assign overlapping foreground pixels to the higher-scoring object."""
+
+    frame_hw = (int(frame_hw[0]), int(frame_hw[1]))
+    originals = {}
+    labeled = []
+    for objidx in obj_mgr.objiter:
+        if not obj_mgr.memory_list[objidx].check_has_prompts():
+            continue
+        maskresult = obj_mgr.maskresults_list[objidx]
+        hires = uictrl.create_hires_mask_uint8(maskresult.preds, maskresult.idx, frame_hw)
+        originals[objidx] = hires
+        labeled.append((obj_mgr.stable_ids[objidx], hires, float(maskresult.objscore)))
+
+    resolved_by_id = resolve_overlapping_masks(labeled)
+    obj_mgr.exclusive_hw = frame_hw
+    obj_mgr.mask_before_exclusion = originals
+    obj_mgr.exclusive_masks = {
+        objidx: resolved_by_id[obj_mgr.stable_ids[objidx]] for objidx in originals
+    }
+
+
+def commit_pending_frame_memory(obj_mgr, track_model, encoded_img) -> None:
+    """Encode frame memory from masks after overlap has been removed."""
+
+    for item in obj_mgr.pending_memory:
+        objidx = item["objidx"]
+        if not (0 <= objidx < len(obj_mgr.memory_list)):
+            continue
+        maskresult = obj_mgr.maskresults_list[objidx]
+        preds = maskresult.preds
+        original = obj_mgr.mask_before_exclusion.get(objidx)
+        exclusive = obj_mgr.exclusive_masks.get(objidx)
+        if original is not None and exclusive is not None:
+            removed = (original > 0) & (exclusive == 0)
+            preds = suppress_lost_pixels(preds, item["mask_index"], removed)
+        mem_enc = track_model.encode_frame_memory(
+            encoded_img,
+            preds,
+            item["obj_ptr"],
+            item["obj_score"],
+            mask_index=item["mask_index"],
+        )
+        obj_mgr.memory_list[objidx].store_frame_result(mem_enc)
+    obj_mgr.pending_memory.clear()
+
+
+def finalize_frame_masks(obj_mgr, uictrl, track_model, encoded_img, frame_hw) -> None:
+    """Resolve overlaps, then write frame memory for inferences queued on this frame."""
+
+    refresh_exclusive_masks(obj_mgr, uictrl, frame_hw)
+    if encoded_img is not None:
+        commit_pending_frame_memory(obj_mgr, track_model, encoded_img)
+    else:
+        obj_mgr.pending_memory.clear()
+
+
+def notify_lost_objects(toast, obj_mgr, lost_objects) -> None:
     """Emit a transient warning toast when one or more objects are newly lost."""
     if toast is None or not lost_objects:
         return
-    ids = sorted({int(objidx) + 1 for objidx in lost_objects})
+    stable_ids = []
+    for objidx in lost_objects:
+        objidx = int(objidx)
+        if 0 <= objidx < len(obj_mgr.stable_ids):
+            stable_ids.append(int(obj_mgr.stable_ids[objidx]))
+    ids = sorted(set(stable_ids))
+    if len(ids) == 0:
+        return
     if len(ids) == 1:
         toast.notify(f"Object {ids[0]} lost (low score)", level="warning")
     else:
@@ -347,13 +433,23 @@ def notify_lost_objects(toast, lost_objects) -> None:
         toast.notify(f"Objects {id_str} lost (low score)", level="warning")
 
 
-def collect_mask_contours(obj_mgr, buffer_select_idx, uictrl, preencode_hw):
+def mask_for_object(obj_mgr, objidx, uictrl, frame_hw) -> np.ndarray:
+    """Return the exclusive display mask when it matches this frame size."""
+
+    frame_hw = (int(frame_hw[0]), int(frame_hw[1]))
+    cached = obj_mgr.exclusive_masks.get(objidx)
+    if cached is not None and obj_mgr.exclusive_hw == frame_hw and tuple(cached.shape[:2]) == frame_hw:
+        return cached
+    maskresult = obj_mgr.maskresults_list[objidx]
+    return uictrl.create_hires_mask_uint8(maskresult.preds, maskresult.idx, frame_hw)
+
+
+def collect_mask_contours(obj_mgr, buffer_select_idx, uictrl, frame_hw):
     """Build selected/unselected contour lists from current mask results."""
     selected_mask_contours, selected_mask_uint8 = None, None
     unselected_contours = []
-    for objidx, maskresult in enumerate(obj_mgr.maskresults_list):
-        mask_preds, mask_idx = maskresult.preds, maskresult.idx
-        mask_uint8 = uictrl.create_hires_mask_uint8(mask_preds, mask_idx, preencode_hw)
+    for objidx, _maskresult in enumerate(obj_mgr.maskresults_list):
+        mask_uint8 = mask_for_object(obj_mgr, objidx, uictrl, frame_hw)
         _, mask_contours_norm = get_contours_from_mask(mask_uint8, normalize=True)
         mask_contours_norm = tuple(mask_contours_norm)
         if objidx == buffer_select_idx:
@@ -370,8 +466,7 @@ def find_object_index_at_mask_xy(obj_mgr, active_idx: int, xy_norm, uictrl, outp
     for objidx in obj_mgr.objiter:
         if not obj_mgr.memory_list[objidx].check_has_prompts():
             continue
-        maskresult = obj_mgr.maskresults_list[objidx]
-        mask_uint8 = uictrl.create_hires_mask_uint8(maskresult.preds, maskresult.idx, output_hw)
+        mask_uint8 = mask_for_object(obj_mgr, objidx, uictrl, output_hw)
         h, w = mask_uint8.shape[0:2]
         x_px = min(max(int(round(xy_norm[0] * (w - 1))), 0), w - 1)
         y_px = min(max(int(round(xy_norm[1] * (h - 1))), 0), h - 1)
@@ -449,6 +544,13 @@ class TrackingResultsBuffer:
         self.frames_dict[int(frame_idx)] = label_img.copy()
         return self
 
+    def erase_label(self, stable_id: int):
+        """Remove one object's gray value from frames already stored in memory."""
+        value = np.uint8(stable_id)
+        for label_img in self.frames_dict.values():
+            label_img[label_img == value] = 0
+        return self
+
 
 def get_video_base_name_for_save(video_path) -> str:
     if video_path is None:
@@ -473,9 +575,8 @@ def build_object_label_masks(obj_mgr, uictrl, frame_hw) -> list[tuple[int, np.nd
     for objidx in obj_mgr.objiter:
         if not obj_mgr.memory_list[objidx].check_has_prompts():
             continue
-        mask_preds, mask_idx = obj_mgr.maskresults_list[objidx].preds, obj_mgr.maskresults_list[objidx].idx
-        mask_1ch = uictrl.create_hires_mask_uint8(mask_preds, mask_idx, frame_hw)
-        labeled_masks.append((objidx + 1, mask_1ch))
+        mask_1ch = mask_for_object(obj_mgr, objidx, uictrl, frame_hw)
+        labeled_masks.append((obj_mgr.stable_ids[objidx], mask_1ch))
     return labeled_masks
 
 
@@ -587,7 +688,10 @@ def prompt_and_save_tracking_results(obj_mgr, video_path, window, history=None, 
     try:
         try:
             save_folder, num_saved = save_tracking_label_tif_sequence(
-                obj_mgr.results_buffer.frames_dict, save_folder, progress_cb=report_progress
+                obj_mgr.results_buffer.frames_dict,
+                save_folder,
+                progress_cb=report_progress,
+                fps=fps_value,
             )
         except IOError as err:
             show_message_dialog("Save Failed", f"Could not save tracking results:\n\n{err}", kind="error")
@@ -604,11 +708,27 @@ def prompt_and_save_tracking_results(obj_mgr, video_path, window, history=None, 
                 progress_cb=report_progress,
             )
         except Exception as err:
+            obj_mgr.pending_analysis = {
+                "folder": save_folder,
+                "video_path": video_path,
+                "fps": float(fps_value),
+                "pixel_size_um": float(pixel_size_um),
+            }
             show_message_dialog(
                 "Export Warning",
-                f"Tracking label images were saved, but metric/overlay export failed:\n\n{err}",
+                "Tracking label images were saved, but metric/overlay export failed:\n\n"
+                f"{err}\n\nUse Retry Metrics to write the CSV files and overlay into the same folder.",
                 kind="warning",
             )
+            if history is not None:
+                history.store(save_folder=parent_folder, pixel_size_um=float(pixel_size_um))
+            if toast is not None:
+                toast.notify(
+                    "Labels saved. Metrics were not written. Use Retry Metrics.",
+                    level="warning",
+                    duration_sec=4.0,
+                )
+            return False
 
         progress.update("Done", 1.0, force=True)
     finally:
@@ -621,7 +741,46 @@ def prompt_and_save_tracking_results(obj_mgr, video_path, window, history=None, 
     print("", f"Saved {num_saved} tracking result frame(s)", f"@ {save_folder}", sep="\n", flush=True)
     if toast is not None:
         toast.notify(f"Saved {num_saved} frame(s) + metrics", level="success")
+    obj_mgr.pending_analysis = None
     obj_mgr.results_buffer.clear()
+    return True
+
+
+def retry_pending_metrics(obj_mgr, toast=None) -> bool:
+    """Write metrics and the overlay video for a folder whose label images already exist."""
+
+    pending = obj_mgr.pending_analysis
+    if not pending:
+        if toast is not None:
+            toast.notify("No unfinished metrics export", level="warning")
+        return False
+
+    try:
+        frames = load_saved_label_frames(pending["folder"])
+        export_tracking_analysis(
+            pending["folder"],
+            frames,
+            pending["video_path"],
+            pending["fps"],
+            pending["pixel_size_um"],
+        )
+    except Exception as err:
+        show_message_dialog(
+            "Export Warning",
+            f"Metric/overlay export failed again:\n\n{err}",
+            kind="warning",
+        )
+        return False
+
+    saved_keys = set(frames.keys())
+    live_keys = set(obj_mgr.results_buffer.frames_dict.keys())
+    obj_mgr.pending_analysis = None
+    if live_keys == saved_keys:
+        obj_mgr.results_buffer.clear()
+        if toast is not None:
+            toast.notify("Metrics saved", level="success")
+    elif toast is not None:
+        toast.notify("Metrics saved. Newer frames are still in memory.", level="success")
     return True
 
 
@@ -662,6 +821,7 @@ class ObjectSlotManager:
         max_memory_history,
         enable_record_btn,
         buffer_save_btn,
+        retry_metrics_btn,
         buffer_clear_btn,
         add_object_btn,
         remove_object_btn,
@@ -675,6 +835,7 @@ class ObjectSlotManager:
 
         self.enable_record_btn = enable_record_btn
         self.buffer_save_btn = buffer_save_btn
+        self.retry_metrics_btn = retry_metrics_btn
         self.buffer_clear_btn = buffer_clear_btn
         self.add_object_btn = add_object_btn
         self.remove_object_btn = remove_object_btn
@@ -682,8 +843,14 @@ class ObjectSlotManager:
         self.build_disp_layout_fn = build_disp_layout_fn
 
         self.maskresults_list: list[MaskResults] = []
+        self.stable_ids: list[int] = []
         self.results_buffer = TrackingResultsBuffer.create()
         self.memory_list: list[SAMVideoMemoryBank] = []
+        self.exclusive_masks: dict[int, np.ndarray] = {}
+        self.mask_before_exclusion: dict[int, np.ndarray] = {}
+        self.exclusive_hw: tuple[int, int] | None = None
+        self.pending_memory: list[dict] = []
+        self.pending_analysis: dict | None = None
         self.buffer_btns_list: list[ToggleButton] = []
         self.object_grid = None
         self._object_grid_viewport_h = 0
@@ -730,15 +897,34 @@ class ObjectSlotManager:
         self.ensure_active_object_visible()
         return changed
 
-    def _append_object_data(self):
+    def _allocate_stable_id(self) -> int | None:
+        """Smallest unused label id in 1..255. Freed ids can be reused after their pixels are erased."""
+        used = set(self.stable_ids)
+        for candidate in range(1, self.MAX_OBJECTS + 1):
+            if candidate not in used:
+                return candidate
+        return None
+
+    def _clear_mask_cache(self) -> None:
+        self.exclusive_masks.clear()
+        self.mask_before_exclusion.clear()
+        self.exclusive_hw = None
+        self.pending_memory.clear()
+
+    def _append_object_data(self) -> bool:
+        stable_id = self._allocate_stable_id()
+        if stable_id is None:
+            return False
+        self.stable_ids.append(stable_id)
         self.maskresults_list.append(MaskResults.create(self.init_mask_preds, self.init_mask_idx))
         self.memory_list.append(SAMVideoMemoryBank(self.max_memory_history, max_prompt_memory=self.max_prompt_memory))
+        return True
 
     def _rebuild_object_rows(self):
         self.buffer_btns_list = []
 
-        for objidx in range(len(self.maskresults_list)):
-            buffer_btn = ToggleButton(f"Object {1 + objidx}", button_height=20, text_scale=0.5, on_color=(145, 120, 65))
+        for _objidx, stable_id in enumerate(self.stable_ids):
+            buffer_btn = ToggleButton(f"Object {stable_id}", button_height=20, text_scale=0.5, on_color=(145, 120, 65))
             self.buffer_btns_list.append(buffer_btn)
 
         if len(self.buffer_btns_list) > 1:
@@ -775,7 +961,7 @@ class ObjectSlotManager:
             self.enable_record_btn,
             self.object_grid,
             HStack(self.add_object_btn, self.remove_object_btn),
-            HStack(self.buffer_save_btn, self.buffer_clear_btn),
+            HStack(self.buffer_save_btn, self.retry_metrics_btn, self.buffer_clear_btn),
         )
         self.disp_layout = self.build_disp_layout_fn(self.save_sidebar)
         self.ensure_active_object_visible()
@@ -790,7 +976,9 @@ class ObjectSlotManager:
         if len(self.maskresults_list) >= self.MAX_OBJECTS:
             return False
 
-        self._append_object_data()
+        if not self._append_object_data():
+            return False
+        self._clear_mask_cache()
         select_idx = len(self.maskresults_list) - 1 if select_new else self.get_select_idx()
         self._rebuild_ui(select_idx)
         if clear_prompts:
@@ -803,9 +991,13 @@ class ObjectSlotManager:
         if not (0 <= objidx < len(self.maskresults_list)):
             return False
 
+        removed_id = self.stable_ids[objidx]
+        self.results_buffer.erase_label(removed_id)
         old_select = self.get_select_idx()
         del self.maskresults_list[objidx]
         del self.memory_list[objidx]
+        del self.stable_ids[objidx]
+        self._clear_mask_cache()
 
         if old_select > objidx:
             new_select = old_select - 1
@@ -829,7 +1021,10 @@ class ObjectSlotManager:
         self.init_mask_idx = init_mask_idx
         self.maskresults_list.clear()
         self.memory_list.clear()
+        self.stable_ids.clear()
         self.results_buffer.clear()
+        self.pending_analysis = None
+        self._clear_mask_cache()
         self._append_object_data()
         self._rebuild_ui(0)
         if clear_prompts:
@@ -871,9 +1066,12 @@ def main():
     parser.add_argument(
         "-s",
         "--display_size",
-        default=default_display_size,
+        default=None,
         type=int,
-        help=f"Controls size of displayed results (default: {default_display_size})",
+        help=(
+            f"Controls size of displayed results (default: {default_display_size}). "
+            "Omit to reuse the saved size; pass this flag to override it, including the default."
+        ),
     )
     parser.add_argument(
         "-d",
@@ -894,7 +1092,13 @@ def main():
         "--use_aspect_ratio",
         default=False,
         action="store_true",
-        help="Process the video at it's original aspect ratio",
+        help="Process the video at it's original aspect ratio. Omit to reuse the saved square/aspect choice.",
+    )
+    parser.add_argument(
+        "--square",
+        default=False,
+        action="store_true",
+        help="Force square image padding and override the saved aspect setting",
     )
     parser.add_argument(
         "-b",
@@ -928,9 +1132,12 @@ def main():
     )
     parser.add_argument(
         "--objscore_threshold",
-        default=default_object_score_threshold,
+        default=None,
         type=float,
-        help=f"Threshold below which objects are considered to be 'lost' (default: {default_object_score_threshold})",
+        help=(
+            f"Threshold below which objects are considered to be 'lost' (default: {default_object_score_threshold}). "
+            "Omit to reuse the saved value; pass this flag to override it, including 0."
+        ),
     )
     parser.add_argument(
         "--encode_cache_size",
@@ -952,6 +1159,8 @@ def main():
     )
     # For convenience
     args = parser.parse_args()
+    if args.square and args.use_aspect_ratio:
+        parser.error("Use only one of --square and --use_aspect_ratio")
     arg_video_path = args.video_path
     arg_model_path = args.model_path
     display_size_px = args.display_size
@@ -988,19 +1197,25 @@ def main():
     history = HistoryKeeper()
     _, history_modelpath = history.read("model_path")
 
-    # Restore persisted session settings (precedence: explicit CLI arg > history > built-in default)
-    if args.display_size == default_display_size:
-        has_val, stored_val = history.read("display_size_px")
-        if has_val and isinstance(stored_val, int) and stored_val > 0:
-            display_size_px = stored_val
-    if args.objscore_threshold == default_object_score_threshold:
-        has_val, stored_val = history.read("objscore_threshold")
-        if has_val and isinstance(stored_val, (int, float)):
-            object_score_threshold = float(stored_val)
-    if not args.use_aspect_ratio:
-        has_val, stored_val = history.read("use_square_sizing")
-        if has_val and isinstance(stored_val, bool):
-            use_square_sizing = stored_val
+    # Restore persisted session settings only for options omitted on the command line.
+    # An explicit value, including the built-in default, overrides history.
+    history_display = history.read("display_size_px")[1]
+    history_objscore = history.read("objscore_threshold")[1]
+    history_square = history.read("use_square_sizing")[1]
+    try:
+        display_size_px, object_score_threshold, use_square_sizing = resolve_startup_settings(
+            args.display_size,
+            args.objscore_threshold,
+            args.use_aspect_ratio,
+            args.square,
+            default_display_size,
+            default_object_score_threshold,
+            history_display if isinstance(history_display, int) else None,
+            history_objscore if isinstance(history_objscore, (int, float)) else None,
+            history_square if isinstance(history_square, bool) else None,
+        )
+    except ValueError as err:
+        parser.error(str(err))
     has_val, stored_history_enabled = history.read("enable_history")
     history_enabled_default = stored_history_enabled if isinstance(stored_history_enabled, bool) else True
 
@@ -1051,7 +1266,7 @@ def main():
     vreader = None
     video_fps = 30.0
     if has_video_source:
-        vreader = ReversibleLoopingVideoReader(video_path).release()
+        vreader = open_frame_source(video_path).release()
         vreader.set_frame_buffer_size(reverse_buffer_size)
         video_fps = vreader.get_fps()
         sample_frame = vreader.get_sample_frame()
@@ -1124,10 +1339,11 @@ def main():
     # Create save UI (object rows are managed dynamically by ObjectSlotManager)
     enable_record_btn = ToggleButton("Enable Recording", default_state=False, on_color=(0, 15, 255), button_height=60)
     buffer_save_btn = ImmediateButton("Save Results", button_height=30, text_scale=0.5, color=(110, 145, 65))
+    retry_metrics_btn = ImmediateButton("Retry Metrics", button_height=30, text_scale=0.45, color=(90, 125, 145))
     buffer_clear_btn = ImmediateButton("Clear Results", button_height=30, text_scale=0.5, color=(80, 60, 190))
     add_object_btn = ImmediateButton("Add Object", button_height=30, text_scale=0.5, color=(90, 130, 90))
     remove_object_btn = ImmediateButton("Remove Object", button_height=30, text_scale=0.5, color=(130, 70, 70))
-    force_same_min_width(buffer_save_btn, buffer_clear_btn, add_object_btn, remove_object_btn)
+    force_same_min_width(buffer_save_btn, retry_metrics_btn, buffer_clear_btn, add_object_btn, remove_object_btn)
 
     # Set up resource switcher bar (model / video)
     model_btn = ImmediateButton(
@@ -1157,6 +1373,7 @@ def main():
         max_memory_history,
         enable_record_btn,
         buffer_save_btn,
+        retry_metrics_btn,
         buffer_clear_btn,
         add_object_btn,
         remove_object_btn,
@@ -1179,7 +1396,7 @@ def main():
     # Setup display window
     window = DisplayWindow(f"{__app_name__}  by {__author__}", display_fps=60)
     obj_mgr.bind_window(window)
-    shortcuts_help = ShortcutsHelpWindow(offset_xy=(60, 60))
+    shortcuts_help = ShortcutsHelpWindow(offset_xy=(60, 60), version=__version__)
     shortcuts_help.attach_f1_toggle(window)
 
     user_guide = UserGuideWindow(__app_name__, __version__, __author__, __author_email__, initial_lang="zh")
@@ -1246,426 +1463,264 @@ def main():
     try:
 
         while True:
-            if has_video_source:
-                is_paused, frame_idx, frame = next(video_iter)
-            else:
-                is_paused, frame_idx, frame = True, 0, placeholder_frame.copy()
-
-            pick_changed, pick_xy_norm = middle_pick_olay.read()
-            if pick_changed and pick_xy_norm is not None and has_video_source:
-                hit_idx = find_object_index_at_mask_xy(
-                    obj_mgr, obj_mgr.get_select_idx(), pick_xy_norm, uictrl, frame.shape[0:2]
-                )
-                if hit_idx is not None:
-                    obj_mgr.select_object(hit_idx)
-
-            if model_btn.read():
-                picked_model_path = pick_model_file(__file__, model_path)
-                window.refocus()
-                if picked_model_path and picked_model_path != model_path:
-                    unload_sam_model(sam_core)
-                    encode_cache.clear()
-                    model_path = picked_model_path
-                    model_name = osp.basename(model_path)
-                    if has_video_source:
-                        history.store(video_path=video_path, model_path=model_path)
-                    else:
-                        history.store(model_path=model_path)
-
-                    sam_core, interact_model, track_model = load_sam_models(model_path, device_config_dict)
-                    model_btn.set_label(format_resource_button_label("Model", model_name))
-                    toast.notify(f"Model loaded: {model_name}", level="success")
-
-                    if has_video_source:
-                        vreader.set_playback_position(0)
-                        sample_frame = vreader.get_sample_frame()
-                    else:
-                        sample_frame = placeholder_frame.copy()
-                    ui_elems.image.set_image(sample_frame)
-                    encoded_img, init_mask_preds, iou_preds, init_mask_idx, preencode_hw, token_hw = run_initial_model_pass(
-                        interact_model, sample_frame, imgenc_config_dict
-                    )
-                    print_model_config(model_name, device_config_dict, preencode_hw, token_hw)
-
-                    clear_tracking_ui_state(
-                        uictrl,
-                        ui_elems,
-                        unselected_olay,
-                        obj_mgr,
-                        init_mask_preds,
-                        init_mask_idx,
-                        track_btn,
-                        enable_record_btn,
-                        reversal_btn,
-                        imgenc_idx_keeper,
-                        track_idx_keeper,
-                        num_prompts_text,
-                        num_history_text,
-                        vreader,
-                    )
-                    if has_video_source and vreader is not None:
-                        vreader.pause()
-                    pause_keeper.record(True)
-                    curr_state = STATES.PAUSED
-                    continue
-
-            if video_btn.read():
-                picked_video_path = pick_video_file(video_path)
-                window.refocus()
-                if picked_video_path and (picked_video_path != video_path):
-                    if vreader is not None:
-                        vreader.release()
-                    encode_cache.clear()
-
-                    video_path = picked_video_path
-                    video_name = osp.basename(video_path)
-                    history.store(video_path=video_path, model_path=model_path)
-
-                    vreader = ReversibleLoopingVideoReader(video_path).release()
-                    vreader.set_frame_buffer_size(reverse_buffer_size)
-                    video_fps = vreader.get_fps()
-                    sample_frame = vreader.get_sample_frame()
-                    first_video_load = not has_video_source
-                    has_video_source = True
-
-                    if playback_slider is None:
-                        playback_slider = LoopingVideoPlaybackSlider(vreader, stay_paused_on_change=True)
-                    else:
-                        playback_slider.replace_video_reader(vreader)
-
-                    video_iter = iter(vreader)
-                    video_btn.set_label(format_resource_button_label("Video", video_name))
-                    toast.notify(f"Video loaded: {video_name}", level="success")
-
-                    if first_video_load:
-                        window.attach_keypress_callback(" ", vreader.toggle_pause)
-                        obj_mgr._rebuild_ui(obj_mgr.get_select_idx())
-
-                    ui_elems.image.set_image(sample_frame)
-                    encoded_img, init_mask_preds, iou_preds, init_mask_idx, preencode_hw, token_hw = run_initial_model_pass(
-                        interact_model, sample_frame, imgenc_config_dict
-                    )
-                    print_model_config(model_name, device_config_dict, preencode_hw, token_hw)
-
-                    clear_tracking_ui_state(
-                        uictrl,
-                        ui_elems,
-                        unselected_olay,
-                        obj_mgr,
-                        init_mask_preds,
-                        init_mask_idx,
-                        track_btn,
-                        enable_record_btn,
-                        reversal_btn,
-                        imgenc_idx_keeper,
-                        track_idx_keeper,
-                        num_prompts_text,
-                        num_history_text,
-                        vreader,
-                    )
-                    vreader.pause()
-                    pause_keeper.record(True)
-                    curr_state = STATES.PAUSED
-                    continue
-
-            # Change playback direction, if needed
-            is_reversed_changed, reverse_video = reversal_btn.read()
-            if has_video_source and is_reversed_changed:
-                vreader.toggle_reverse_state(reverse_video)
-
-            # Read controls
-            is_changed_pause_state = pause_keeper.is_changed(is_paused)
-            is_history_toggle_changed, is_trackhistory_enabled = enable_history_btn.read()
-            if is_history_toggle_changed:
-                history.store(enable_history=bool(is_trackhistory_enabled))
-                toast.notify(
-                    f"History {'enabled' if is_trackhistory_enabled else 'disabled'}", level="info", duration_sec=1.5
-                )
-
-            is_changed_buffer, buffer_select_idx, _ = obj_mgr.read_selection()
-            if is_changed_buffer:
-                obj_mgr.ensure_active_object_visible()
-            is_changed_tool, _, selected_tool = ui_elems.tools_constraint.read()
-            selected_has_no_stored_prompts = not obj_mgr.memory_list[buffer_select_idx].check_has_prompts()
-            if is_changed_tool:
-                if prev_selected_tool is ui_elems.tools.hover and selected_tool is not ui_elems.tools.hover:
-                    clear_hover_preview_mask(obj_mgr, buffer_select_idx, track_idx_keeper)
-                elif selected_has_no_stored_prompts:
-                    obj_mgr.maskresults_list[buffer_select_idx].clear()
-                if selected_has_no_stored_prompts:
-                    hover_preview_suppressed = True
-
-            is_changed_track_idx = track_idx_keeper.is_changed(frame_idx)
-            prev_selected_tool = selected_tool
-
-            if is_changed_buffer:
-                ui_elems.clear_prompts(keep_hover_position=False)
-                clear_hover_preview_mask(obj_mgr, buffer_select_idx, track_idx_keeper)
-                hover_preview_suppressed = True
-                for objidx in obj_mgr.objiter:
-                    if not obj_mgr.memory_list[objidx].check_has_prompts():
-                        obj_mgr.maskresults_list[objidx].clear()
-                track_idx_keeper.clear()
-
-            # Allow the track button to play/pause the video
-            is_trackstate_changed, is_track_on = track_btn.read()
-            if has_video_source and is_trackstate_changed:
-                vreader.pause(not is_track_on)
-
-            # Wipe out buffered data
-            if clear_prompts_btn.read():
-                obj_mgr.memory_list[buffer_select_idx].clear(clear_frame_memory=False)
-                obj_mgr.maskresults_list[buffer_select_idx].clear()
-                track_idx_keeper.clear()
-                toast.notify(f"Prompts cleared (Object {buffer_select_idx + 1})", level="info", duration_sec=1.5)
-            if clear_history_btn.read():
-                obj_mgr.memory_list[buffer_select_idx].clear(clear_prompt_memory=False)
-                track_idx_keeper.clear()
-                toast.notify(f"History cleared (Object {buffer_select_idx + 1})", level="info", duration_sec=1.5)
-
-            if add_object_btn.read():
-                if obj_mgr.add_object():
-                    toast.notify(f"Added Object {len(obj_mgr.maskresults_list)}", level="success", duration_sec=1.5)
-                    layout_image = obj_mgr.disp_layout.render(h=display_size_px, w=display_size_px)
-                    obj_mgr.finalize_layout_callback_regions()
-                    render_side = "h" if layout_image.shape[1] > layout_image.shape[0] else "w"
-                    render_limit_dict = {render_side: display_size_px}
-                    min_display_size_px = (
-                        obj_mgr.disp_layout._rdr.limits.min_h if render_side == "h" else obj_mgr.disp_layout._rdr.limits.min_w
-                    )
-                    buffer_select_idx = obj_mgr.get_select_idx()
-                    for objidx in obj_mgr.objiter:
-                        if objidx != buffer_select_idx and not obj_mgr.memory_list[objidx].check_has_prompts():
-                            obj_mgr.maskresults_list[objidx].clear()
-
-            if remove_object_btn.read():
-                if obj_mgr.remove_selected_object():
-                    layout_image = obj_mgr.disp_layout.render(h=display_size_px, w=display_size_px)
-                    obj_mgr.finalize_layout_callback_regions()
-                    render_side = "h" if layout_image.shape[1] > layout_image.shape[0] else "w"
-                    render_limit_dict = {render_side: display_size_px}
-                    min_display_size_px = (
-                        obj_mgr.disp_layout._rdr.limits.min_h if render_side == "h" else obj_mgr.disp_layout._rdr.limits.min_w
-                    )
-                    buffer_select_idx = obj_mgr.get_select_idx()
-                    toast.notify("Object removed", level="info", duration_sec=1.5)
-
-            if shortcuts_btn.read():
-                shortcuts_help.toggle()
-                window.refocus()
-
-            # Update text feedback
-            vram_usage_mb = vram_report.get_vram_usage()
-            vram_text.set_value(vram_usage_mb)
-            num_prompt_mems, num_frame_mems = obj_mgr.memory_list[buffer_select_idx].get_num_memories()
-            num_prompts_text.set_value(num_prompt_mems)
-            num_history_text.set_value(num_frame_mems)
-
-            # Ugly: Figure out current states
-            is_playback_adjusting = playback_slider.is_adjusting() if playback_slider is not None else False
-            scrub_just_released = was_playback_adjusting and not is_playback_adjusting and has_video_source
-            was_playback_adjusting = is_playback_adjusting
-            have_any_stored_prompts = any(mem.check_has_prompts() for mem in obj_mgr.memory_list)
-            if is_playback_adjusting:
-                curr_state = STATES.ADJUST_PLAYBACK
-            elif is_paused:
-                curr_state = STATES.PAUSED
-            else:
-                curr_state = STATES.TRACKING
-
-            # Handle transition states (mostly need to account for playback slider!)
-            if is_playback_adjusting:
-                tran_state = STATES.ADJUST_PLAYBACK
-            elif is_changed_pause_state and is_paused:
-                tran_state = STATES.SWITCH_PAUSE_ON
-            elif is_changed_pause_state and not is_paused:
-                tran_state = STATES.SWITCH_PAUSE_OFF
-            else:
-                tran_state = STATES.NO_TRANSITION
-
-            # Encode any 'new' frames as needed (but not while the playback slider is being dragged)
-            need_image_encode = has_video_source and imgenc_idx_keeper.is_changed(frame_idx)
-            should_encode_frame = (need_image_encode and not is_playback_adjusting) or (
-                scrub_just_released and have_any_stored_prompts
-            )
-            if should_encode_frame:
-                cached_encoding = encode_cache.get(frame_idx, compute_device)
-                if cached_encoding is not None:
-                    encoded_img = cached_encoding
-                else:
-                    encoded_img = interact_model.encode_image(frame, **imgenc_config_dict)
-                    encode_cache.store(frame_idx, encoded_img)
-                imgenc_idx_keeper.record(frame_idx)
-
-            if scrub_just_released and have_any_stored_prompts:
-                lost_objects = []
-                run_multi_object_tracking(
-                    obj_mgr,
-                    track_model,
-                    encoded_img,
-                    frame_idx,
-                    object_score_threshold,
-                    keep_tracking_after_loss,
-                    is_trackhistory_enabled,
-                    lost_objects,
-                )
-                notify_lost_objects(toast, lost_objects)
-                track_idx_keeper.record(frame_idx)
-
-            # Wipe out masking/contours when jumping around playback (otherwise stays over top of changing video!)
-            if is_playback_adjusting:
-                for maskresult in obj_mgr.maskresults_list:
-                    maskresult.clear()
-
-                ui_elems.clear_prompts()
+            try:
                 if has_video_source:
-                    vreader.pause()
-                track_btn.toggle(False, flag_if_changed=False)
+                    is_paused, frame_idx, frame = next(video_iter)
+                else:
+                    is_paused, frame_idx, frame = True, 0, placeholder_frame.copy()
 
-            # Universal updates whenever the pause state changes
-            if is_changed_pause_state:
-
-                # Consume user prompt inputs (if we don't do this, inputs queued up during playback can appear!)
-                uictrl.read_prompts()
-                ui_elems.clear_prompts()
-
-                # Enable/disable prompt UI when playing/pausing
-                ui_elems.enable_tools(is_paused)
-                pause_keeper.record(is_paused)
-
-            # Handle transistion states
-            if tran_state == STATES.SWITCH_PAUSE_ON:
-
-                # Make sure track button is disabled to indicate pause state
-                track_btn.toggle(False, flag_if_changed=False)
-
-                # For QoL, if user was on FG/BG point, switch back to hover (more intuitive to work with)
-                _, _, selected_tool = ui_elems.tools_constraint.read()
-                need_hover_switch = selected_tool in (ui_elems.tools.fgpt, ui_elems.tools.bgpt)
-                if need_hover_switch:
-                    ui_elems.tools_constraint.change_to(ui_elems.tools.hover)
-
-                # Wipe out segmentation data and any UI interactions that may have queued
-                uictrl.read_prompts()
-                ui_elems.clear_prompts()
-                hover_preview_suppressed = True
-
-            elif tran_state == STATES.SWITCH_PAUSE_OFF:
-
-                # Make sure track button is enabled to indicate active playback/tracking
-                track_btn.toggle(True, flag_if_changed=False)
-
-                # If there is no tracking data, clear any on-screen masking (i.e. from user interactions)
-                no_prompt_data = all(mem.check_has_prompts() == 0 for mem in obj_mgr.memory_list)
-                if no_prompt_data:
-                    for maskresult in obj_mgr.maskresults_list:
-                        maskresult.clear()
-
-            # Handle main steady states (paused or tracking)
-            if curr_state == STATES.PAUSED:
-
-                # Initialize storage for predictions(which may not occur
-                paused_mask_preds = None
-                paused_obj_score = None
-
-                need_prompt_encode, prompts, hover_input_changed = uictrl.read_prompts()
-                have_user_prompts = check_have_prompts(*prompts)
-                have_track_prompts = any(mem.check_has_prompts() for mem in obj_mgr.memory_list)
-                selected_has_track_prompts = obj_mgr.memory_list[buffer_select_idx].check_has_prompts()
-                _, _, selected_tool = ui_elems.tools_constraint.read()
-                is_hover_tool = selected_tool == ui_elems.tools.hover
-                hover_preview_allowed = is_hover_tool and not selected_has_track_prompts
-                # Hover points are ignored for masking when the selected object already has saved prompts
-                interactive_user_prompts = have_user_prompts and not (is_hover_tool and selected_has_track_prompts)
-
-                if hover_preview_suppressed:
-                    if hover_input_changed:
-                        hover_preview_suppressed = False
-                    elif hover_preview_allowed:
-                        obj_mgr.maskresults_list[buffer_select_idx].clear()
-
-                can_run_hover_preview = hover_preview_allowed and have_user_prompts and not hover_preview_suppressed
-
-                # Drop stale hover previews when using non-hover tools on a fresh object
-                if not is_hover_tool and selected_has_no_stored_prompts and not have_user_prompts:
-                    obj_mgr.maskresults_list[buffer_select_idx].clear()
-
-                # Hover preview lifecycle (only when the selected object has no saved prompts)
-                if hover_preview_allowed and not have_user_prompts:
-                    obj_mgr.maskresults_list[buffer_select_idx].clear()
-
-                if need_prompt_encode:
-                    if can_run_hover_preview:
-                        encoded_prompts = interact_model.encode_prompts(*prompts)
-                        paused_mask_preds, iou_preds = interact_model.generate_masks(
-                            encoded_img,
-                            encoded_prompts,
-                            mask_hint=None,
-                            blank_promptless_output=True,
-                        )
-                        track_idx_keeper.clear()
-                    elif not is_hover_tool and have_user_prompts:
-                        encoded_prompts = interact_model.encode_prompts(*prompts)
-                        paused_mask_preds, iou_preds = interact_model.generate_masks(
-                            encoded_img,
-                            encoded_prompts,
-                            mask_hint=None,
-                            blank_promptless_output=True,
-                        )
-                        track_idx_keeper.clear()
-
-                # If there are no interactive user prompts but the selected object has tracking prompts, run the tracker
-                if (
-                    selected_has_track_prompts
-                    and not interactive_user_prompts
-                    and is_changed_track_idx
-                    and not scrub_just_released
-                ):
-                    lost_objects = []
-                    paused_mask_preds, iou_preds, paused_obj_score = track_single_object_at_frame(
-                        buffer_select_idx,
-                        frame_idx,
-                        obj_mgr,
-                        track_model,
-                        encoded_img,
-                        object_score_threshold,
-                        keep_tracking_after_loss,
-                        is_trackhistory_enabled,
-                        lost_objects,
+                pick_changed, pick_xy_norm = middle_pick_olay.read()
+                if pick_changed and pick_xy_norm is not None and has_video_source:
+                    hit_idx = find_object_index_at_mask_xy(
+                        obj_mgr, obj_mgr.get_select_idx(), pick_xy_norm, uictrl, frame.shape[0:2]
                     )
-                    notify_lost_objects(toast, lost_objects)
-                    track_idx_keeper.record(frame_idx)
+                    if hit_idx is not None:
+                        obj_mgr.select_object(hit_idx)
 
-                # Store encoded prompts as needed (requires new FG/BG points or a box, not hover-only on tracked objects)
-                if store_prompt_btn.read():
-                    if not interactive_user_prompts:
+                if model_btn.read():
+                    picked_model_path = pick_model_file(__file__, model_path)
+                    window.refocus()
+                    if picked_model_path and picked_model_path != model_path:
+                        unload_sam_model(sam_core)
+                        encode_cache.clear()
+                        model_path = picked_model_path
+                        model_name = osp.basename(model_path)
+                        if has_video_source:
+                            history.store(video_path=video_path, model_path=model_path)
+                        else:
+                            history.store(model_path=model_path)
+
+                        sam_core, interact_model, track_model = load_sam_models(model_path, device_config_dict)
+                        model_btn.set_label(format_resource_button_label("Model", model_name))
+                        toast.notify(f"Model loaded: {model_name}", level="success")
+
+                        if has_video_source:
+                            vreader.set_playback_position(0)
+                            sample_frame = vreader.get_sample_frame()
+                        else:
+                            sample_frame = placeholder_frame.copy()
+                        ui_elems.image.set_image(sample_frame)
+                        encoded_img, init_mask_preds, iou_preds, init_mask_idx, preencode_hw, token_hw = run_initial_model_pass(
+                            interact_model, sample_frame, imgenc_config_dict
+                        )
+                        print_model_config(model_name, device_config_dict, preencode_hw, token_hw)
+
+                        clear_tracking_ui_state(
+                            uictrl,
+                            ui_elems,
+                            unselected_olay,
+                            obj_mgr,
+                            init_mask_preds,
+                            init_mask_idx,
+                            track_btn,
+                            enable_record_btn,
+                            reversal_btn,
+                            imgenc_idx_keeper,
+                            track_idx_keeper,
+                            num_prompts_text,
+                            num_history_text,
+                            vreader,
+                        )
+                        if has_video_source and vreader is not None:
+                            vreader.pause()
+                        pause_keeper.record(True)
+                        curr_state = STATES.PAUSED
+                        continue
+
+                if video_btn.read():
+                    picked_video_path = pick_frame_source(video_path)
+                    window.refocus()
+                    if picked_video_path and (picked_video_path != video_path):
+                        if vreader is not None:
+                            vreader.release()
+                        encode_cache.clear()
+
+                        video_path = picked_video_path
+                        video_name = osp.basename(video_path)
+                        history.store(video_path=video_path, model_path=model_path)
+
+                        vreader = open_frame_source(video_path).release()
+                        vreader.set_frame_buffer_size(reverse_buffer_size)
+                        video_fps = vreader.get_fps()
+                        sample_frame = vreader.get_sample_frame()
+                        first_video_load = not has_video_source
+                        has_video_source = True
+
+                        if playback_slider is None:
+                            playback_slider = LoopingVideoPlaybackSlider(vreader, stay_paused_on_change=True)
+                        else:
+                            playback_slider.replace_video_reader(vreader)
+
+                        video_iter = iter(vreader)
+                        video_btn.set_label(format_resource_button_label("Video", video_name))
+                        toast.notify(f"Video loaded: {video_name}", level="success")
+
+                        if first_video_load:
+                            window.attach_keypress_callback(" ", vreader.toggle_pause)
+                            obj_mgr._rebuild_ui(obj_mgr.get_select_idx())
+
+                        ui_elems.image.set_image(sample_frame)
+                        encoded_img, init_mask_preds, iou_preds, init_mask_idx, preencode_hw, token_hw = run_initial_model_pass(
+                            interact_model, sample_frame, imgenc_config_dict
+                        )
+                        print_model_config(model_name, device_config_dict, preencode_hw, token_hw)
+
+                        clear_tracking_ui_state(
+                            uictrl,
+                            ui_elems,
+                            unselected_olay,
+                            obj_mgr,
+                            init_mask_preds,
+                            init_mask_idx,
+                            track_btn,
+                            enable_record_btn,
+                            reversal_btn,
+                            imgenc_idx_keeper,
+                            track_idx_keeper,
+                            num_prompts_text,
+                            num_history_text,
+                            vreader,
+                        )
+                        vreader.pause()
+                        pause_keeper.record(True)
+                        curr_state = STATES.PAUSED
+                        continue
+
+                # Change playback direction, if needed
+                is_reversed_changed, reverse_video = reversal_btn.read()
+                frame_direction = playback_direction(reverse_video)
+                if has_video_source and is_reversed_changed:
+                    vreader.toggle_reverse_state(reverse_video)
+
+                # Read controls
+                is_changed_pause_state = pause_keeper.is_changed(is_paused)
+                is_history_toggle_changed, is_trackhistory_enabled = enable_history_btn.read()
+                if is_history_toggle_changed:
+                    history.store(enable_history=bool(is_trackhistory_enabled))
+                    toast.notify(
+                        f"History {'enabled' if is_trackhistory_enabled else 'disabled'}", level="info", duration_sec=1.5
+                    )
+
+                is_changed_buffer, buffer_select_idx, _ = obj_mgr.read_selection()
+                if is_changed_buffer:
+                    obj_mgr.ensure_active_object_visible()
+                is_changed_tool, _, selected_tool = ui_elems.tools_constraint.read()
+                selected_has_no_stored_prompts = not obj_mgr.memory_list[buffer_select_idx].check_has_prompts()
+                if is_changed_tool:
+                    if prev_selected_tool is ui_elems.tools.hover and selected_tool is not ui_elems.tools.hover:
+                        clear_hover_preview_mask(obj_mgr, buffer_select_idx, track_idx_keeper)
+                    elif selected_has_no_stored_prompts:
+                        obj_mgr.maskresults_list[buffer_select_idx].clear()
+                    if selected_has_no_stored_prompts:
+                        hover_preview_suppressed = True
+
+                is_changed_track_idx = track_idx_keeper.is_changed(frame_idx)
+                prev_selected_tool = selected_tool
+
+                if is_changed_buffer:
+                    ui_elems.clear_prompts(keep_hover_position=False)
+                    clear_hover_preview_mask(obj_mgr, buffer_select_idx, track_idx_keeper)
+                    hover_preview_suppressed = True
+                    for objidx in obj_mgr.objiter:
+                        if not obj_mgr.memory_list[objidx].check_has_prompts():
+                            obj_mgr.maskresults_list[objidx].clear()
+                    track_idx_keeper.clear()
+
+                # Allow the track button to play/pause the video
+                is_trackstate_changed, is_track_on = track_btn.read()
+                if has_video_source and is_trackstate_changed:
+                    vreader.pause(not is_track_on)
+
+                # Wipe out buffered data
+                if clear_prompts_btn.read():
+                    obj_mgr.memory_list[buffer_select_idx].clear(clear_frame_memory=False)
+                    obj_mgr.maskresults_list[buffer_select_idx].clear()
+                    track_idx_keeper.clear()
+                    toast.notify(f"Prompts cleared (Object {obj_mgr.stable_ids[buffer_select_idx]})", level="info", duration_sec=1.5)
+                if clear_history_btn.read():
+                    obj_mgr.memory_list[buffer_select_idx].clear(clear_prompt_memory=False)
+                    track_idx_keeper.clear()
+                    toast.notify(f"History cleared (Object {obj_mgr.stable_ids[buffer_select_idx]})", level="info", duration_sec=1.5)
+
+                if add_object_btn.read():
+                    if obj_mgr.add_object():
                         toast.notify(
-                            "Store Prompt ignored: add new FG/BG points or a box first",
-                            level="warning",
+                            f"Added Object {obj_mgr.stable_ids[obj_mgr.get_select_idx()]}",
+                            level="success",
+                            duration_sec=1.5,
                         )
+                        layout_image = obj_mgr.disp_layout.render(h=display_size_px, w=display_size_px)
+                        obj_mgr.finalize_layout_callback_regions()
+                        render_side = "h" if layout_image.shape[1] > layout_image.shape[0] else "w"
+                        render_limit_dict = {render_side: display_size_px}
+                        min_display_size_px = (
+                            obj_mgr.disp_layout._rdr.limits.min_h if render_side == "h" else obj_mgr.disp_layout._rdr.limits.min_w
+                        )
+                        buffer_select_idx = obj_mgr.get_select_idx()
+                        for objidx in obj_mgr.objiter:
+                            if objidx != buffer_select_idx and not obj_mgr.memory_list[objidx].check_has_prompts():
+                                obj_mgr.maskresults_list[objidx].clear()
+
+                if remove_object_btn.read():
+                    if obj_mgr.remove_selected_object():
+                        layout_image = obj_mgr.disp_layout.render(h=display_size_px, w=display_size_px)
+                        obj_mgr.finalize_layout_callback_regions()
+                        render_side = "h" if layout_image.shape[1] > layout_image.shape[0] else "w"
+                        render_limit_dict = {render_side: display_size_px}
+                        min_display_size_px = (
+                            obj_mgr.disp_layout._rdr.limits.min_h if render_side == "h" else obj_mgr.disp_layout._rdr.limits.min_w
+                        )
+                        buffer_select_idx = obj_mgr.get_select_idx()
+                        toast.notify("Object removed", level="info", duration_sec=1.5)
+
+                if shortcuts_btn.read():
+                    shortcuts_help.toggle()
+                    window.refocus()
+
+                # Update text feedback
+                vram_usage_mb = vram_report.get_vram_usage()
+                vram_text.set_value(vram_usage_mb)
+                num_prompt_mems, num_frame_mems = obj_mgr.memory_list[buffer_select_idx].get_num_memories()
+                num_prompts_text.set_value(num_prompt_mems)
+                num_history_text.set_value(num_frame_mems)
+
+                # Ugly: Figure out current states
+                is_playback_adjusting = playback_slider.is_adjusting() if playback_slider is not None else False
+                scrub_just_released = was_playback_adjusting and not is_playback_adjusting and has_video_source
+                was_playback_adjusting = is_playback_adjusting
+                have_any_stored_prompts = any(mem.check_has_prompts() for mem in obj_mgr.memory_list)
+                if is_playback_adjusting:
+                    curr_state = STATES.ADJUST_PLAYBACK
+                elif is_paused:
+                    curr_state = STATES.PAUSED
+                else:
+                    curr_state = STATES.TRACKING
+
+                # Handle transition states (mostly need to account for playback slider!)
+                if is_playback_adjusting:
+                    tran_state = STATES.ADJUST_PLAYBACK
+                elif is_changed_pause_state and is_paused:
+                    tran_state = STATES.SWITCH_PAUSE_ON
+                elif is_changed_pause_state and not is_paused:
+                    tran_state = STATES.SWITCH_PAUSE_OFF
+                else:
+                    tran_state = STATES.NO_TRANSITION
+
+                # Encode any 'new' frames as needed (but not while the playback slider is being dragged)
+                need_image_encode = has_video_source and imgenc_idx_keeper.is_changed(frame_idx)
+                should_encode_frame = (need_image_encode and not is_playback_adjusting) or (
+                    scrub_just_released and have_any_stored_prompts
+                )
+                if should_encode_frame:
+                    cached_encoding = encode_cache.get(frame_idx, compute_device)
+                    if cached_encoding is not None:
+                        encoded_img = cached_encoding
                     else:
-                        _, init_mem = track_model.encode_prompt_memory(
-                            encoded_img,
-                            *prompts,
-                            mask_index=None,
-                        )
-                        selected_memory = obj_mgr.memory_list[buffer_select_idx]
-                        selected_memory.store_prompt_result(init_mem)
-                        selected_memory.clear_tracking_stop_frame()
-                        ui_elems.clear_prompts()
-                        track_idx_keeper.clear()
-                        toast.notify(f"Prompt stored (Object {buffer_select_idx + 1})", level="success")
+                        encoded_img = interact_model.encode_image(frame, **imgenc_config_dict)
+                        encode_cache.store(frame_idx, encoded_img)
+                    imgenc_idx_keeper.record(frame_idx)
 
-                # Store user-interaction results for selected object while paused
-                if paused_mask_preds is not None:
-                    paused_mask_idx = get_best_mask_index(iou_preds)
-                    obj_mgr.maskresults_list[buffer_select_idx].update(paused_mask_preds, paused_mask_idx, paused_obj_score)
-
-            elif curr_state == STATES.TRACKING:
-
-                # Only run tracking if we're on a new index
-                if is_changed_track_idx:
-                    track_idx_keeper.record(frame_idx)
+                if scrub_just_released and have_any_stored_prompts:
                     lost_objects = []
                     run_multi_object_tracking(
                         obj_mgr,
@@ -1676,71 +1731,177 @@ def main():
                         keep_tracking_after_loss,
                         is_trackhistory_enabled,
                         lost_objects,
+                        frame_direction,
                     )
-                    notify_lost_objects(toast, lost_objects)
+                    notify_lost_objects(toast, obj_mgr, lost_objects)
+                    track_idx_keeper.record(frame_idx)
 
-            # Update the mask indicators
-            selected_mask_uint8, selected_mask_contours, unselected_contours = collect_mask_contours(
-                obj_mgr, buffer_select_idx, uictrl, preencode_hw
-            )
-            apply_display_contours(
-                uictrl, unselected_olay, frame, selected_mask_uint8, selected_mask_contours, unselected_contours
-            )
+                # Wipe out masking/contours when jumping around playback (otherwise stays over top of changing video!)
+                if is_playback_adjusting:
+                    for maskresult in obj_mgr.maskresults_list:
+                        maskresult.clear()
+                    obj_mgr.exclusive_masks.clear()
+                    obj_mgr.mask_before_exclusion.clear()
+                    obj_mgr.exclusive_hw = None
 
-            # Keep the prompt undo stack consistent with current overlay contents
-            undo_mgr.sync()
+                    ui_elems.clear_prompts()
+                    if has_video_source:
+                        vreader.pause()
+                    track_btn.toggle(False, flag_if_changed=False)
 
-            # Display final image
-            display_image = obj_mgr.disp_layout.render(**render_limit_dict)
-            obj_mgr.finalize_layout_callback_regions()
-            obj_mgr.sync_object_grid_viewport_height()
-            toast.draw(display_image, ui_elems.image.get_region_xyxy())
-            req_break, keypress = window.show(display_image, None if is_paused else 1)
-            user_guide.process_events(window)
-            if req_break:
-                if not handle_close_request(obj_mgr, video_path, window, history, toast, video_fps):
-                    continue
-                break
+                # Universal updates whenever the pause state changes
+                if is_changed_pause_state:
 
-            # Updates playback indicator & allows for adjusting playback
-            if playback_slider is not None:
-                playback_slider.update(frame_idx)
+                    # Consume user prompt inputs (if we don't do this, inputs queued up during playback can appear!)
+                    uictrl.read_prompts()
+                    ui_elems.clear_prompts()
 
-            # Scale display size up when pressing +/- keys
-            if keypress == KEY_ZOOM_IN:
-                display_size_px = min(display_size_px + 50, 10000)
-                render_limit_dict = {render_side: display_size_px}
-                history.store(display_size_px=int(display_size_px))
-            if keypress == KEY_ZOOM_OUT:
-                display_size_px = max(display_size_px - 50, min_display_size_px)
-                render_limit_dict = {render_side: display_size_px}
-                history.store(display_size_px=int(display_size_px))
+                    # Enable/disable prompt UI when playing/pausing
+                    ui_elems.enable_tools(is_paused)
+                    pause_keeper.record(is_paused)
 
-            step_delta = 0
-            if has_video_source and is_paused:
-                if keypress in KEY_STEP_BACK_KEYS:
-                    step_delta = -1
-                elif keypress in KEY_STEP_FWD_KEYS:
-                    step_delta = 1
+                # Handle transistion states
+                if tran_state == STATES.SWITCH_PAUSE_ON:
 
-            if step_delta != 0:
-                while step_delta != 0 and not req_break:
-                    prev_idx = vreader.get_frame_index()
-                    new_idx = vreader.step_frame_by(step_delta)
-                    if new_idx == prev_idx:
-                        break
+                    # Make sure track button is disabled to indicate pause state
+                    track_btn.toggle(False, flag_if_changed=False)
 
-                    frame_idx = new_idx
-                    frame = vreader.get_current_frame()
-                    cached_encoding = encode_cache.get(frame_idx, compute_device)
-                    if cached_encoding is not None:
-                        encoded_img = cached_encoding
-                    else:
-                        encoded_img = interact_model.encode_image(frame, **imgenc_config_dict)
-                        encode_cache.store(frame_idx, encoded_img)
-                    imgenc_idx_keeper.record(frame_idx)
+                    # For QoL, if user was on FG/BG point, switch back to hover (more intuitive to work with)
+                    _, _, selected_tool = ui_elems.tools_constraint.read()
+                    need_hover_switch = selected_tool in (ui_elems.tools.fgpt, ui_elems.tools.bgpt)
+                    if need_hover_switch:
+                        ui_elems.tools_constraint.change_to(ui_elems.tools.hover)
 
-                    if any(mem.check_has_prompts() for mem in obj_mgr.memory_list):
+                    # Wipe out segmentation data and any UI interactions that may have queued
+                    uictrl.read_prompts()
+                    ui_elems.clear_prompts()
+                    hover_preview_suppressed = True
+
+                elif tran_state == STATES.SWITCH_PAUSE_OFF:
+
+                    # Make sure track button is enabled to indicate active playback/tracking
+                    track_btn.toggle(True, flag_if_changed=False)
+
+                    # If there is no tracking data, clear any on-screen masking (i.e. from user interactions)
+                    no_prompt_data = all(mem.check_has_prompts() == 0 for mem in obj_mgr.memory_list)
+                    if no_prompt_data:
+                        for maskresult in obj_mgr.maskresults_list:
+                            maskresult.clear()
+
+                # Handle main steady states (paused or tracking)
+                if curr_state == STATES.PAUSED:
+
+                    # Initialize storage for predictions(which may not occur
+                    paused_mask_preds = None
+                    paused_obj_score = None
+
+                    need_prompt_encode, prompts, hover_input_changed = uictrl.read_prompts()
+                    have_user_prompts = check_have_prompts(*prompts)
+                    have_track_prompts = any(mem.check_has_prompts() for mem in obj_mgr.memory_list)
+                    selected_has_track_prompts = obj_mgr.memory_list[buffer_select_idx].check_has_prompts()
+                    _, _, selected_tool = ui_elems.tools_constraint.read()
+                    is_hover_tool = selected_tool == ui_elems.tools.hover
+                    hover_preview_allowed = is_hover_tool and not selected_has_track_prompts
+                    # Hover points are ignored for masking when the selected object already has saved prompts
+                    interactive_user_prompts = have_user_prompts and not (is_hover_tool and selected_has_track_prompts)
+
+                    if hover_preview_suppressed:
+                        if hover_input_changed:
+                            hover_preview_suppressed = False
+                        elif hover_preview_allowed:
+                            obj_mgr.maskresults_list[buffer_select_idx].clear()
+
+                    can_run_hover_preview = hover_preview_allowed and have_user_prompts and not hover_preview_suppressed
+
+                    # Drop stale hover previews when using non-hover tools on a fresh object
+                    if not is_hover_tool and selected_has_no_stored_prompts and not have_user_prompts:
+                        obj_mgr.maskresults_list[buffer_select_idx].clear()
+
+                    # Hover preview lifecycle (only when the selected object has no saved prompts)
+                    if hover_preview_allowed and not have_user_prompts:
+                        obj_mgr.maskresults_list[buffer_select_idx].clear()
+
+                    if need_prompt_encode:
+                        if can_run_hover_preview:
+                            encoded_prompts = interact_model.encode_prompts(*prompts)
+                            paused_mask_preds, iou_preds = interact_model.generate_masks(
+                                encoded_img,
+                                encoded_prompts,
+                                mask_hint=None,
+                                blank_promptless_output=True,
+                            )
+                            track_idx_keeper.clear()
+                        elif not is_hover_tool and have_user_prompts:
+                            encoded_prompts = interact_model.encode_prompts(*prompts)
+                            paused_mask_preds, iou_preds = interact_model.generate_masks(
+                                encoded_img,
+                                encoded_prompts,
+                                mask_hint=None,
+                                blank_promptless_output=True,
+                            )
+                            track_idx_keeper.clear()
+
+                    # If there are no interactive user prompts but the selected object has tracking prompts, run the tracker
+                    if (
+                        selected_has_track_prompts
+                        and not interactive_user_prompts
+                        and is_changed_track_idx
+                        and not scrub_just_released
+                    ):
+                        lost_objects = []
+                        paused_mask_preds, iou_preds, paused_obj_score = track_single_object_at_frame(
+                            buffer_select_idx,
+                            frame_idx,
+                            obj_mgr,
+                            track_model,
+                            encoded_img,
+                            object_score_threshold,
+                            keep_tracking_after_loss,
+                            is_trackhistory_enabled,
+                            lost_objects,
+                            frame_direction,
+                        )
+                        notify_lost_objects(toast, obj_mgr, lost_objects)
+                        track_idx_keeper.record(frame_idx)
+
+                    # Store encoded prompts as needed (requires new FG/BG points or a box, not hover-only on tracked objects)
+                    if store_prompt_btn.read():
+                        if not interactive_user_prompts:
+                            toast.notify(
+                                "Store Prompt ignored: add new FG/BG points or a box first",
+                                level="warning",
+                            )
+                        else:
+                            _, init_mem = track_model.encode_prompt_memory(
+                                encoded_img,
+                                *prompts,
+                                mask_index=None,
+                            )
+                            selected_memory = obj_mgr.memory_list[buffer_select_idx]
+                            selected_memory.store_prompt_result(init_mem)
+                            selected_memory.clear_tracking_stop_frame()
+                            if clear_history_on_new_prompts:
+                                selected_memory.discard_frame_memory()
+                            obj_mgr.pending_memory = [
+                                item for item in obj_mgr.pending_memory if item["objidx"] != buffer_select_idx
+                            ]
+                            ui_elems.clear_prompts()
+                            track_idx_keeper.clear()
+                            toast.notify(
+                                f"Prompt stored (Object {obj_mgr.stable_ids[buffer_select_idx]})",
+                                level="success",
+                            )
+
+                    # Store user-interaction results for selected object while paused
+                    if paused_mask_preds is not None:
+                        paused_mask_idx = get_best_mask_index(iou_preds)
+                        obj_mgr.maskresults_list[buffer_select_idx].update(paused_mask_preds, paused_mask_idx, paused_obj_score)
+
+                elif curr_state == STATES.TRACKING:
+
+                    # Only run tracking if we're on a new index
+                    if is_changed_track_idx:
+                        track_idx_keeper.record(frame_idx)
                         lost_objects = []
                         run_multi_object_tracking(
                             obj_mgr,
@@ -1751,65 +1912,156 @@ def main():
                             keep_tracking_after_loss,
                             is_trackhistory_enabled,
                             lost_objects,
+                            frame_direction,
                         )
-                        notify_lost_objects(toast, lost_objects)
-                    else:
-                        for maskresult in obj_mgr.maskresults_list:
-                            maskresult.clear()
-                    track_idx_keeper.record(frame_idx)
+                        notify_lost_objects(toast, obj_mgr, lost_objects)
 
-                    selected_mask_uint8, selected_mask_contours, unselected_contours = collect_mask_contours(
-                        obj_mgr, buffer_select_idx, uictrl, preencode_hw
-                    )
-                    apply_display_contours(
-                        uictrl, unselected_olay, frame, selected_mask_uint8, selected_mask_contours, unselected_contours
-                    )
-                    display_image = obj_mgr.disp_layout.render(**render_limit_dict)
-                    obj_mgr.finalize_layout_callback_regions()
-                    toast.draw(display_image, ui_elems.image.get_region_xyxy())
-                    req_break, keypress = window.show(display_image, None)
-                    user_guide.process_events(window)
-                    if playback_slider is not None:
-                        playback_slider.update(frame_idx)
-
+                # Resolve overlaps before drawing or recording, then commit this frame's memory.
+                finalize_frame_masks(obj_mgr, uictrl, track_model, encoded_img, frame.shape[0:2])
+                if has_video_source and scrub_just_released:
                     _, is_record_enabled = enable_record_btn.read()
                     if is_record_enabled:
                         record_combined_tracking_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2])
 
-                    step_delta = 0
-                    if not req_break and is_paused:
-                        if keypress in KEY_STEP_BACK_KEYS:
-                            step_delta = -1
-                        elif keypress in KEY_STEP_FWD_KEYS:
-                            step_delta = 1
+                # Update the mask indicators
+                selected_mask_uint8, selected_mask_contours, unselected_contours = collect_mask_contours(
+                    obj_mgr, buffer_select_idx, uictrl, frame.shape[0:2]
+                )
+                apply_display_contours(
+                    uictrl, unselected_olay, frame, selected_mask_uint8, selected_mask_contours, unselected_contours
+                )
 
+                # Keep the prompt undo stack consistent with current overlay contents
+                undo_mgr.sync()
+
+                # Display final image
+                display_image = obj_mgr.disp_layout.render(**render_limit_dict)
+                obj_mgr.finalize_layout_callback_regions()
+                obj_mgr.sync_object_grid_viewport_height()
+                toast.draw(display_image, ui_elems.image.get_region_xyxy())
+                req_break, keypress = window.show(display_image, None if is_paused else 1)
+                user_guide.process_events(window)
                 if req_break:
                     if not handle_close_request(obj_mgr, video_path, window, history, toast, video_fps):
-                        req_break = False
                         continue
                     break
-                continue
 
-            # Handle recording of combined label images
-            _, is_record_enabled = enable_record_btn.read()
-            if has_video_source and is_record_enabled and curr_state == STATES.TRACKING:
-                record_combined_tracking_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2])
+                # Updates playback indicator & allows for adjusting playback
+                if playback_slider is not None:
+                    playback_slider.update(frame_idx)
 
-            # Save buffered results to disk
-            if has_video_source and buffer_save_btn.read():
-                if obj_mgr.results_buffer.has_data():
-                    prompt_and_save_tracking_results(obj_mgr, video_path, window, history, toast, video_fps)
-                else:
-                    toast.notify("No tracking results in memory to save", level="warning")
+                # Scale display size up when pressing +/- keys
+                if keypress == KEY_ZOOM_IN:
+                    display_size_px = min(display_size_px + 50, 10000)
+                    render_limit_dict = {render_side: display_size_px}
+                    history.store(display_size_px=int(display_size_px))
+                if keypress == KEY_ZOOM_OUT:
+                    display_size_px = max(display_size_px - 50, min_display_size_px)
+                    render_limit_dict = {render_side: display_size_px}
+                    history.store(display_size_px=int(display_size_px))
 
-            # Wipe out all buffered result data if needed
-            if buffer_clear_btn.read():
-                obj_mgr.results_buffer.clear()
-                toast.notify("Results buffer cleared", level="info", duration_sec=1.5)
+                step_delta = 0
+                if has_video_source and is_paused:
+                    if keypress in KEY_STEP_BACK_KEYS:
+                        step_delta = -1
+                    elif keypress in KEY_STEP_FWD_KEYS:
+                        step_delta = 1
 
-    except KeyboardInterrupt:
-        print("", "Closed with Ctrl+C", sep="\n")
+                if step_delta != 0:
+                    while step_delta != 0 and not req_break:
+                        prev_idx = vreader.get_frame_index()
+                        new_idx = vreader.step_frame_by(step_delta)
+                        if new_idx == prev_idx:
+                            break
 
+                        frame_idx = new_idx
+                        frame = vreader.get_current_frame()
+                        cached_encoding = encode_cache.get(frame_idx, compute_device)
+                        if cached_encoding is not None:
+                            encoded_img = cached_encoding
+                        else:
+                            encoded_img = interact_model.encode_image(frame, **imgenc_config_dict)
+                            encode_cache.store(frame_idx, encoded_img)
+                        imgenc_idx_keeper.record(frame_idx)
+
+                        if any(mem.check_has_prompts() for mem in obj_mgr.memory_list):
+                            lost_objects = []
+                            step_direction = 1 if step_delta > 0 else -1
+                            run_multi_object_tracking(
+                                obj_mgr,
+                                track_model,
+                                encoded_img,
+                                frame_idx,
+                                object_score_threshold,
+                                keep_tracking_after_loss,
+                                is_trackhistory_enabled,
+                                lost_objects,
+                                step_direction,
+                            )
+                            notify_lost_objects(toast, obj_mgr, lost_objects)
+                        else:
+                            for maskresult in obj_mgr.maskresults_list:
+                                maskresult.clear()
+                        track_idx_keeper.record(frame_idx)
+
+                        finalize_frame_masks(obj_mgr, uictrl, track_model, encoded_img, frame.shape[0:2])
+                        selected_mask_uint8, selected_mask_contours, unselected_contours = collect_mask_contours(
+                            obj_mgr, buffer_select_idx, uictrl, frame.shape[0:2]
+                        )
+                        apply_display_contours(
+                            uictrl, unselected_olay, frame, selected_mask_uint8, selected_mask_contours, unselected_contours
+                        )
+                        display_image = obj_mgr.disp_layout.render(**render_limit_dict)
+                        obj_mgr.finalize_layout_callback_regions()
+                        toast.draw(display_image, ui_elems.image.get_region_xyxy())
+                        req_break, keypress = window.show(display_image, None)
+                        user_guide.process_events(window)
+                        if playback_slider is not None:
+                            playback_slider.update(frame_idx)
+
+                        _, is_record_enabled = enable_record_btn.read()
+                        if is_record_enabled:
+                            record_combined_tracking_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2])
+
+                        step_delta = 0
+                        if not req_break and is_paused:
+                            if keypress in KEY_STEP_BACK_KEYS:
+                                step_delta = -1
+                            elif keypress in KEY_STEP_FWD_KEYS:
+                                step_delta = 1
+
+                    if req_break:
+                        if not handle_close_request(obj_mgr, video_path, window, history, toast, video_fps):
+                            req_break = False
+                            continue
+                        break
+                    continue
+
+                # Handle recording of combined label images
+                _, is_record_enabled = enable_record_btn.read()
+                if has_video_source and is_record_enabled and curr_state == STATES.TRACKING:
+                    record_combined_tracking_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2])
+
+                # Save buffered results to disk
+                if has_video_source and buffer_save_btn.read():
+                    if obj_mgr.results_buffer.has_data():
+                        prompt_and_save_tracking_results(obj_mgr, video_path, window, history, toast, video_fps)
+                    else:
+                        toast.notify("No tracking results in memory to save", level="warning")
+
+                if retry_metrics_btn.read():
+                    retry_pending_metrics(obj_mgr, toast)
+
+                # Wipe out all buffered result data if needed
+                if buffer_clear_btn.read():
+                    obj_mgr.results_buffer.clear()
+                    obj_mgr.pending_analysis = None
+                    toast.notify("Results buffer cleared", level="info", duration_sec=1.5)
+
+            except KeyboardInterrupt:
+                if handle_close_request(obj_mgr, video_path, window, history, toast, video_fps):
+                    print("", "Closed with Ctrl+C", sep="\n")
+                    break
     finally:
         # Clean up resources
         shortcuts_help.close()

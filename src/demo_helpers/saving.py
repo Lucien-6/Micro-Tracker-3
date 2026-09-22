@@ -5,6 +5,7 @@
 # ---------------------------------------------------------------------------------------------------------------------
 # %% Imports
 
+import csv
 import os
 import os.path as osp
 from datetime import datetime
@@ -47,12 +48,28 @@ def make_mt_results_folder_name(video_base_name: str, timestamp: datetime | None
 # .....................................................................................................................
 
 
+def label_filename_width(frame_indices: list[int]) -> int:
+    """Digit width for frame-index filenames. At least 5, wider when the index needs it."""
+
+    if len(frame_indices) == 0:
+        return 5
+    return max(5, len(str(max(int(frame_idx) for frame_idx in frame_indices))))
+
+
+def label_tif_filename(frame_idx: int, width: int = 5) -> str:
+    """TIFF name for a video frame index, e.g. frame 240 -> 00240.tif."""
+
+    return f"{int(frame_idx):0{int(width)}d}.tif"
+
+
 def save_tracking_label_tif_sequence(
-    frames_dict: dict[int, ndarray], save_folder: str, progress_cb=None
+    frames_dict: dict[int, ndarray], save_folder: str, progress_cb=None, fps: float | None = None
 ) -> tuple[str, int]:
     """
     Save combined label frames as an 8-bit TIF image sequence.
-    Files are named 00001.tif, 00002.tif, ... in ascending frame-index order.
+
+    Each file is named with the source frame index (00240.tif is video frame 240).
+    frame_index.csv maps those filenames back to frame_index and time_s.
 
     'progress_cb', if given, is called as progress_cb(stage, current, total).
 
@@ -61,18 +78,62 @@ def save_tracking_label_tif_sequence(
     """
 
     os.makedirs(save_folder, exist_ok=True)
-    sorted_keys = sorted(frames_dict.keys())
+    sorted_keys = sorted(int(frame_idx) for frame_idx in frames_dict.keys())
+    width = label_filename_width(sorted_keys)
     total = len(sorted_keys)
     num_saved = 0
-    for seq_idx, frame_idx in enumerate(sorted_keys, start=1):
-        save_path = osp.join(save_folder, f"{seq_idx:05d}.tif")
+    manifest_rows = []
+    for frame_idx in sorted_keys:
+        filename = label_tif_filename(frame_idx, width)
+        save_path = osp.join(save_folder, filename)
         label_img = frames_dict[frame_idx]
         if label_img.dtype != np.uint8:
             label_img = label_img.astype(np.uint8)
         if not cv2.imwrite(save_path, label_img):
             raise IOError(f"Failed to write tracking result image: {save_path}")
+        time_s = (frame_idx / fps) if fps and fps > 0 else 0.0
+        manifest_rows.append({"filename": filename, "frame_index": frame_idx, "time_s": time_s})
         num_saved += 1
         if progress_cb is not None:
             progress_cb("Saving label images", num_saved, total)
 
+    manifest_path = osp.join(save_folder, "frame_index.csv")
+    with open(manifest_path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("filename", "frame_index", "time_s"))
+        writer.writeheader()
+        writer.writerows(manifest_rows)
+
     return save_folder, num_saved
+
+
+def load_saved_label_frames(save_folder: str) -> dict[int, ndarray]:
+    """
+    Reload label images written by save_tracking_label_tif_sequence.
+
+    Uses frame_index.csv when it is present. Otherwise treats a numeric TIFF
+    stem as the frame index.
+    """
+
+    manifest_path = osp.join(save_folder, "frame_index.csv")
+    frames: dict[int, ndarray] = {}
+    if osp.isfile(manifest_path):
+        with open(manifest_path, newline="") as handle:
+            for row in csv.DictReader(handle):
+                frame_idx = int(row["frame_index"])
+                image_path = osp.join(save_folder, row["filename"])
+                label_img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+                if label_img is None:
+                    raise IOError(f"Failed to read label image: {image_path}")
+                frames[frame_idx] = label_img
+        return frames
+
+    for name in sorted(os.listdir(save_folder)):
+        stem, ext = osp.splitext(name)
+        if ext.lower() != ".tif" or not stem.isdigit():
+            continue
+        image_path = osp.join(save_folder, name)
+        label_img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        if label_img is None:
+            raise IOError(f"Failed to read label image: {image_path}")
+        frames[int(stem)] = label_img
+    return frames

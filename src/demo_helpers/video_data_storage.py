@@ -27,6 +27,10 @@ class SAMVideoMemoryBank:
         # First frame index where object score fell below threshold; inference is skipped while
         # frame_idx >= this value until reconcile clears it or Store Prompt adds new prompts.
         self.tracking_stop_frame_idx: int | None = None
+        # Playhead position of the last inference. Frame memory is kept only while the
+        # playhead steps by exactly one frame in the same direction.
+        self.last_tracked_frame_idx: int | None = None
+        self.track_direction: int | None = None
 
     def store_prompt_result(self, memory_encoding: list[Tensor]):
         """Used to store prompt memory encodings"""
@@ -36,6 +40,42 @@ class SAMVideoMemoryBank:
     def store_frame_result(self, memory_encoding: list[Tensor]):
         """Used to store per-frame memory encodings"""
         self.frame_memory.append(memory_encoding)
+        return self
+
+    def discard_frame_memory(self):
+        """Drop frame memory and the playhead chain. Prompt memory is kept."""
+        self.frame_memory.clear()
+        self.last_tracked_frame_idx = None
+        self.track_direction = None
+        return self
+
+    def begin_frame(self, frame_idx: int, direction: int) -> str:
+        """
+        Prepare frame memory for an inference at frame_idx.
+
+        direction is +1 when time moves forward and -1 when it moves backward.
+
+        Returns:
+            "same" — this frame was already inferred; keep memory and do not append another copy
+            "continue" — the frame is exactly one step in the current direction
+            "start" — no chain yet, or the playhead jumped / changed direction (frame memory cleared)
+        """
+
+        frame_idx = int(frame_idx)
+        direction = 1 if int(direction) >= 0 else -1
+        if self.last_tracked_frame_idx is None:
+            return "start"
+        if frame_idx == self.last_tracked_frame_idx:
+            return "same"
+        if self.track_direction == direction and frame_idx == self.last_tracked_frame_idx + direction:
+            return "continue"
+        self.discard_frame_memory()
+        return "start"
+
+    def note_playhead(self, frame_idx: int, direction: int):
+        """Remember a completed inference so the next adjacent frame can continue the chain."""
+        self.last_tracked_frame_idx = int(frame_idx)
+        self.track_direction = 1 if int(direction) >= 0 else -1
         return self
 
     def to_dict(self) -> dict:
@@ -53,7 +93,7 @@ class SAMVideoMemoryBank:
 
     def clear(self, clear_prompt_memory: bool = True, clear_frame_memory: bool = True):
         if clear_frame_memory:
-            self.frame_memory.clear()
+            self.discard_frame_memory()
         if clear_prompt_memory:
             self.prompt_memory.clear()
         self.tracking_stop_frame_idx = None

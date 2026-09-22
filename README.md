@@ -6,20 +6,21 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_sam](https://github.com/heyoeyo/muggled_sam); SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.5.1](CHANGELOG.md) (2026-06-27) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.6.0](CHANGELOG.md) (2026-09-22) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
 ## Features
 
 | Category | Capability |
-|----------|------------|
+| --- | --- |
+| **Input** | Video files, multipage TIFF stacks, and folders of still images |
 | **Segmentation** | Point, box, and hover-based prompts with live mask preview |
 | **Tracking** | Temporal propagation via SAM memory encoder (prompt + frame history) |
 | **Lost-target policy** | Per-object stop on low object score (default); optional continued inference via `--keep_bad_objscores` |
-| **Multi-object** | Up to 255 independent object slots; scrollable two-column list (mouse wheel) when more than 32 |
+| **Multi-object** | Up to 255 slots with stable label ids; scrollable two-column list (mouse wheel) when more than 32 |
 | **Playback** | Pause, play, reverse, frame stepping, and timeline scrubbing; CPU encode cache + reverse frame buffer for fast scrubbing/stepping |
-| **Export** | Combined per-frame label masks (`00001.tif`, …) plus **metrics CSV**, **MSD CSV**, and a multi-object **overlay video** |
+| **Export** | Frame-index label TIFFs (`00240.tif`), `frame_index.csv`, metrics CSV, MSD CSV, and an overlay video; **Retry Metrics** finishes a failed analysis export |
 | **Analysis** | Per-frame centroid, area, orientation (fitted-ellipse long axis), velocity, displacement, and MSD |
 | **Feedback** | On-screen **toast** messages centered in the video; modal dialogs for errors; live **save progress** window |
 | **Editing** | **Ctrl+Z** undo for the last prompt; expanded session persistence (`.history`) |
@@ -85,7 +86,7 @@ pip install -r requirements.txt
 
 Place one or more weight files in the `model_weights/` folder:
 
-```
+```text
 micro-tracker-3/
 └── model_weights/
     └── sam2_hiera_large.pt   # example filename
@@ -157,7 +158,7 @@ Repeat steps 3–5 for additional objects before tracking.
 Press **F1** inside the app for the full in-GUI reference. Summary:
 
 | Keys | Action |
-|------|--------|
+| --- | --- |
 | `Space` | Play / pause |
 | `←` / `→` | Step backward / forward (while paused) |
 | `A` / `D` | Step backward / forward (while paused, alternate) |
@@ -181,15 +182,17 @@ Press **F1** inside the app for the full in-GUI reference. Summary:
 ```text
 python main.py [OPTIONS]
 
-  -i, --video_path PATH       Input video (optional; otherwise pick in GUI)
+  -i, --video_path PATH       Input video, TIFF stack, or image folder (optional; otherwise pick in GUI)
   -m, --model_path PATH       SAM weights (optional; default: model_weights/)
   -d, --device DEVICE         cuda | mps | cpu (default: auto-detect)
   -s, --display_size PX       UI display size (default: 900)
   -b, --base_size_px PX       Image encoder longest side (default: 1344)
-  -ar, --use_aspect_ratio     Keep original aspect ratio (default: square pad)
+  -ar, --use_aspect_ratio     Keep original aspect ratio (overrides the saved choice)
+  --square                    Force square padding (overrides the saved choice)
   -f32, --use_float32         Use float32 instead of bfloat16
   --max_memories N            Frame memory history length (default: 6)
-  --objscore_threshold F      Object score below which target is treated as lost (default: 0.0)
+  --objscore_threshold F      Object score below which target is treated as lost.
+                              Omit to reuse the saved value; pass 0 to force the default.
   --keep_bad_objscores        Keep inferencing after loss; masks still zeroed on low-score frames
   --keep_history_on_new_prompts
                               Retain frame history when adding new prompts
@@ -215,22 +218,22 @@ When recording is enabled and results are saved, the app writes a folder named:
 
 ```text
 {video_basename}_MT-Results_{YYYYMMDD-HHMMSS}/
-├── 00001.tif               # 8-bit grayscale label images
-├── 00002.tif
-├── ...
+├── 00000.tif               # label for video frame 0
+├── 00240.tif               # label for video frame 240
+├── frame_index.csv         # filename, frame_index, time_s
 ├── tracking_metrics.csv    # per-frame, per-object metrics
 ├── tracking_msd.csv        # time-averaged MSD per object
-└── tracking_overlay.mp4     # colored contours + fading trajectories (if a video is loaded)
+└── tracking_overlay.mp4    # colored contours + fading trajectories (if a video is loaded)
 ```
 
-Each `*.tif` is an **8-bit grayscale label image**:
+Each `*.tif` is an **8-bit grayscale label image** named with the source frame index:
 
-- Pixel value **0** = background  
-- Pixel value **1** = Object 1  
-- Pixel value **2** = Object 2  
-- …  
+- Pixel value **0** = background
+- Pixel value **1** = the object whose stable id is 1
+- Pixel value **2** = the object whose stable id is 2
+- …
 
-Overlapping instances are resolved by **later objects overwriting earlier ones**. Frame order follows sorted frame indices, not necessarily consecutive video frame numbers.
+Object ids stay fixed when a slot is removed. Removing a slot erases that id from frames already in memory; the other ids do not move. Overlapping pixels are given to the object with the higher score on that frame. Equal scores keep the smaller id.
 
 The label sequence is compatible with common downstream tools (ImageJ, TrackMate, custom Python/MATLAB pipelines). In addition, Micro Tracker 3 computes analysis-ready outputs directly:
 
@@ -246,7 +249,7 @@ The label sequence is compatible with common downstream tools (ImageJ, TrackMate
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.5.1)
+├── VERSION                   # Current release (1.6.0)
 ├── CHANGELOG.md
 ├── docs/
 │   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-09-22
+
+### Added
+
+- TIFF stacks and folders of still images can be opened as frame sources. The export dialog still supplies the frame rate.
+- Label TIFF files are named with the source frame index, and `frame_index.csv` records filename, frame index, and time.
+- **Retry Metrics** writes the metrics CSV, MSD CSV, and overlay video into a folder whose label images were already saved.
+- `--square` forces square image padding and overrides the saved aspect setting.
+
+### Changed
+
+- Overlapping label pixels go to the object with the higher score. Equal scores keep the smaller stable id.
+- **Store Prompt** clears that object's frame memory unless `--keep_history_on_new_prompts` is set.
+- Display size, object-score threshold, and square/aspect sizing use `.history` only when the command line omits them. An explicit value, including the built-in default, overrides the saved one.
+
+### Fixed
+
+- Object label ids stay fixed when a slot is removed. The removed id is erased from frames already in memory; surviving ids are not renumbered. Lost-target warnings use the same stable id.
+- Frame memory is appended only for the next adjacent frame in the same playback direction. A jump or a direction change clears that chain and leaves prompt memory in place.
+- A failed metrics or overlay export keeps the in-memory labels and does not report the save as fully successful.
+- Releasing the timeline while recording writes that frame.
+- Ctrl+C uses the same unsaved-results prompt as closing the window. Cancelling the save leaves the app open.
+
 ## [1.5.1] - 2026-06-27
 
 ### Changed
@@ -140,6 +163,7 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.6.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.6.0
 [1.5.1]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.5.1
 [1.5.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.5.0
 [1.4.2]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.2

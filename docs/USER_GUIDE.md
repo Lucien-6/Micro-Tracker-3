@@ -1,7 +1,7 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.5.1  
-**Last updated:** 2026-06-27  
+**Version:** 1.6.0  
+**Last updated:** 2026-09-22  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
 This document mirrors the in-app guide (press **H** while the main window is focused; switch **English / 中文** in the guide window). For installation and repository layout, see [README.md](../README.md).
@@ -25,7 +25,7 @@ The app supports up to **255 object slots**, each with its own prompt memory and
 ## 2. Typical workflow
 
 | Step | Action |
-|------|--------|
+| --- | --- |
 | 1 | Load **model** and **video** (GUI buttons or `-m` / `-i`). |
 | 2 | Select an **object slot** (Object 1, 2, …). |
 | 3 | **Pause** the video (Space). |
@@ -43,7 +43,7 @@ Repeat steps 2–5 for additional objects before tracking.
 ## 3. Prompt tools
 
 | Tool | Use |
-|------|-----|
+| --- | --- |
 | **Hover** | Live mask preview when the slot has **no** stored prompts yet. |
 | **Box** | Drag a rectangle around the target. |
 | **FG Point** | Foreground clicks (include region). |
@@ -54,7 +54,7 @@ Repeat steps 2–5 for additional objects before tracking.
 The effect of left/right clicks and Shift depends on the active tool. Only the selected tool's overlay responds; other tools ignore mouse input.
 
 | Tool | Input | Effect |
-|------|-------|--------|
+| --- | --- | --- |
 | **Hover** | Move | Live mask preview at the cursor (only when the slot has no stored prompts). |
 | **Hover** | Left-click | **Append** one FG point and switch to the FG tool. Shift has no effect. |
 | **Hover** | Right-click | **Append** one BG point and switch to the BG tool. Shift has no effect. |
@@ -68,6 +68,7 @@ The effect of left/right clicks and Shift depends on the active tool. Only the s
 | Any | Middle-click | Select the object under the cursor (operates on tracked masks, independent of the prompt tool). |
 
 Notes:
+
 - Right-click drag is treated as a right-click (release inside the region); there is no separate drag semantic for right-button actions.
 - For FG/BG tools, left-drag has no intermediate preview — the point is applied on release using the rules above.
 - When all FG/BG points are removed (e.g. by right-click in the FG/BG tool), the tool auto-switches back to Hover. Removing the last box in the Box tool does **not** auto-switch — you stay on the Box tool.
@@ -90,8 +91,9 @@ If Store is ignored, add FG/BG points or a box (switch off Hover for tracked obj
 
 ## 4. Tracking and temporal memory
 
-- **Enable History** (default on) — Appends per-frame memory encodings (depth set by `--max_memories`, default 6) to help long runs.
+- **Enable History** (default on) — Appends a frame-memory encoding only when playback steps exactly one frame in the same direction. A jump or a direction change clears that chain and leaves the stored prompts in place.
 - **Clear History** — Removes frame memory for the selected object; prompt memory remains.
+- **Store Prompt** clears that object's frame memory unless `--keep_history_on_new_prompts` is set.
 - **Clear Prompts** — Clears stored prompt memory for the selected object (on-screen prompts cleared separately with **C**).
 
 Tracking runs for every object slot that has **stored prompts**, on each new frame during playback, keyboard step, or timeline scrub release.
@@ -113,7 +115,7 @@ SAM outputs an **object score** per frame. Low scores mean the model is unsure t
 **Recovery options:**
 
 | Method | Effect |
-|--------|--------|
+| --- | --- |
 | Move playhead **before** the stop frame | Stop marker clears; tracking can run again from earlier frames. |
 | Pause, add **new** FG/BG points or a box, **Store Prompt** | Clears stop marker and appends prompt memory (revival). |
 
@@ -130,13 +132,13 @@ Adjust sensitivity with `--objscore_threshold` (higher = stricter “lost” det
 ## 6. Multi-object notes
 
 - Loss and stop frames are **per object** — one target leaving the field does not stop others.
-- Combined export assigns gray levels: 0 = background, 1 = Object 1, 2 = Object 2, … (up to 255).
-- Later objects overwrite overlapping pixels in the combined label image.
+- Combined export assigns gray levels: 0 = background, and each live object keeps the id it was given when created (1–255). Removing a slot erases that id from frames already recorded; other ids stay put.
+- Overlapping pixels go to the object with the higher score. Equal scores keep the smaller id.
 
 ### Object sidebar (right panel)
 
 | Count | Behavior |
-|-------|----------|
+| --- | --- |
 | **1–32** | Two-column **Object N** buttons share the available sidebar height (may compress with window size). |
 | **33–255** | The object grid keeps the **same row height** as when 32 objects are shown; **mouse wheel** over the grid scrolls extra rows. Enable Recording, Add/Remove, and Save/Clear stay fixed above and below the list. |
 | **Selection** | The **active** object scrolls into view when you pick a slot (sidebar click, **W** / **S**, **↑** / **↓**, or middle-click on a tracked mask). |
@@ -152,7 +154,7 @@ Click targets are kept in sync with the visible buttons after each UI redraw and
 - **Toast notifications** — Short, non-blocking messages appear **centered in the video area** for actions such as model/video load, store/clear prompts, add/remove object, history toggle, and **lost-target warnings**. They fade out automatically.
 - **Error dialogs** — Failures (e.g. could not save, metric/overlay export failed) appear as modal popups so they are not missed.
 - **Undo (Ctrl+Z)** — Removes the most recently added FG/BG point or box for the active object before it is stored. Repeat to step back through the prompts.
-- **Session memory (`.history`)** — In addition to last model/video paths, the app restores **display size**, **last save folder**, **Enable History** state, `--objscore_threshold`, square/aspect sizing, and **pixel size (µm/pixel)** when these are not overridden on the command line.
+- **Session memory (`.history`)** — Restores display size, last save folder, Enable History, object-score threshold, square/aspect sizing, and pixel size when those options are **omitted** on the command line. Passing a value, including the built-in default, overrides the saved one. `--square` forces square padding; `-ar` forces the original aspect ratio.
 
 ---
 
@@ -167,7 +169,7 @@ Click targets are kept in sync with the visible buttons after each UI redraw and
 ## 7. Playback and timeline
 
 | Control | Action |
-|---------|--------|
+| --- | --- |
 | Space | Play / pause |
 | ← / → | Step one frame backward / forward (paused) |
 | A / D | Step one frame backward / forward (paused, alternate) |
@@ -183,7 +185,7 @@ While scrubbing, on-screen masks are cleared temporarily; after release, trackin
 Press **F1** in the main window for the full shortcut panel. Common bindings:
 
 | Input | Action |
-|-------|--------|
+| --- | --- |
 | H | User guide (English / 中文) |
 | F1 | Keyboard shortcuts panel |
 | Space | Play / pause |
@@ -211,8 +213,9 @@ Press **F1** in the main window for the full shortcut panel. Common bindings:
 Output folder: `{video_basename}_MT-Results_{YYYYMMDD-HHMMSS}/`
 
 | File | Contents |
-|------|----------|
-| `00001.tif`, `00002.tif`, … | 8-bit grayscale label images (0 = background, N = Object N). |
+| --- | --- |
+| `00010.tif`, `00240.tif`, … | 8-bit grayscale label images named by source frame index (0 = background, N = object id N). |
+| `frame_index.csv` | Maps each TIFF filename to `frame_index` and `time_s`. |
 | `tracking_metrics.csv` | Per frame and object: centroid (px and µm), area, orientation angle (long axis of the fitted ellipse vs. +X, from image moments), velocity, displacement. |
 | `tracking_msd.csv` | Time-averaged Mean Squared Displacement per object. |
 | `tracking_overlay.mp4` | One overlay video: each object drawn with a unique contour color and a fading ~20-frame trajectory. Written only when a source video is loaded. |
@@ -231,12 +234,13 @@ python main.py [OPTIONS]
   -i, --video_path PATH       Input video (optional; GUI picker otherwise)
   -m, --model_path PATH       SAM weights (default: model_weights/)
   -d, --device DEVICE         cuda | mps | cpu
-  -s, --display_size PX       UI size (default: 900)
+  -s, --display_size PX       UI size. Omit to reuse the saved size; pass 900 to force the default.
   -b, --base_size_px PX       Encoder longest side (default: 1344)
-  -ar, --use_aspect_ratio     Keep video aspect ratio (default: square pad)
+  -ar, --use_aspect_ratio     Keep video aspect ratio (overrides the saved choice)
+  --square                    Force square padding (overrides the saved choice)
   -f32, --use_float32         Float32 weights (more VRAM)
   --max_memories N            Frame history depth (default: 6)
-  --objscore_threshold F      Score below = lost (default: 0.0)
+  --objscore_threshold F      Score below = lost. Omit to reuse the saved value; pass 0 to force the default.
   --keep_bad_objscores        Keep inferencing after loss (masks still zeroed)
   --keep_history_on_new_prompts
                               Retain frame history when adding new prompts

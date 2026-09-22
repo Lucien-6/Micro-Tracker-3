@@ -114,7 +114,7 @@ def _draw_key_badge(img, x, y, key_text: str, key_drawer: TextDrawer, badge_w: i
     key_drawer.xy_centered(img[y:y2, x:x2], key_text)
 
 
-def _render_shortcuts_panel() -> np.ndarray:
+def _render_shortcuts_panel(version: str) -> np.ndarray:
     """Build the static shortcuts reference image."""
 
     panel_w = 560
@@ -150,7 +150,7 @@ def _render_shortcuts_panel() -> np.ndarray:
     header_roi = img[header_top:header_bottom, header_pad_x : panel_w - header_pad_x]
     title_drawer.xy_norm(header_roi, "Keyboard Shortcuts", (0.5, 0.36))
     subtitle_drawer.xy_norm(
-        header_roi, "Micro Tracker 3 v1.5.1  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
+        header_roi, f"Micro Tracker 3 v{version}  |  H: user guide  |  F1: shortcuts", (0.5, 0.78)
     )
 
     y = header_bottom + 10
@@ -192,10 +192,10 @@ class ShortcutsHelpWindow:
     WINDOW_TITLE = "Micro Tracker 3 - Shortcuts"
     F1_KEYCODES = F1_KEYCODES
 
-    def __init__(self, offset_xy: tuple[int, int] = (40, 40)):
+    def __init__(self, offset_xy: tuple[int, int] = (40, 40), version: str = "1.6.0"):
         self._offset_xy = offset_xy
         self._is_visible = False
-        self._panel_bgr = _render_shortcuts_panel()
+        self._panel_bgr = _render_shortcuts_panel(version)
 
         try:
             cv2.destroyWindow(self.WINDOW_TITLE)
