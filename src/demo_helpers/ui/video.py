@@ -78,7 +78,8 @@ class LoopingVideoReader:
         self._need_resize = display_size_px is not None
         self._scale_wh = (first_frame.shape[1], first_frame.shape[0])
         if self._need_resize:
-            self._scale_wh = get_image_hw_for_max_side_length(first_frame, display_size_px)
+            out_h, out_w = get_image_hw_for_max_side_length(first_frame, display_size_px)
+            self._scale_wh = (out_w, out_h)
         self.shape = (self._scale_wh[1], self._scale_wh[0], 3)
 
         # Allocate storage for 'previous frame', which is re-used when paused &
@@ -256,6 +257,12 @@ class LoopingVideoReader:
     def get_current_frame(self) -> ndarray:
         """Return a copy of the frame currently held for display."""
         return self._pause_frame.copy()
+
+    def read_frame(self, frame_idx: int) -> ndarray | None:
+        """Return one decoded frame by index, or None when it cannot be decoded."""
+
+        frame = self._read_frame_at(int(frame_idx))
+        return None if frame is None else frame.copy()
 
     def _pause_at_frame(self, frame_idx: int) -> tuple[bool, int, ndarray]:
         """

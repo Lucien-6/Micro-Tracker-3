@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-09-23
+
+### Fixed
+
+- Omitting `-b` keeps the encode side at **1344**. Pass `1024` for SAM 2's native side or `1008` for SAM 3 / 3.1. Startup still prints the requested side and the actual resolution, and warns when a SAM 3 side is not a multiple of 336.
+
+### Changed
+
+- Save Session also stores the model path, the encode side, and whether frames are stretched to a square. Load Session applies those settings before it re-encodes the prompts. Older session files that omit them still load with the current model and encode settings.
+
+## [1.8.0] - 2026-09-23
+
+### Changed
+
+- Recorded labels stay in memory as packed object crops. Saved TIFF files are still full-frame uint8 images.
+- Overlay trails look up the last points with a sorted search, and MSD uses one array per lag. The numbers match the previous pair average.
+- `--square` is documented as a stretch to a square. CPU inference stays float32; `-f32` forces float32 on GPU.
+
+### Added
+
+- `THIRD_PARTY_NOTICES.md`, `LICENSES/Apache-2.0.txt`, and `src/VENDORED.md` record the Apache-2.0 muggled_sam baseline (`80d85ff`) and the local patches.
+- `requirements-dev.txt`, `pyproject.toml`, and a GitHub Actions workflow run the tests on CPU PyTorch for Windows and Linux.
+- `model_weights/.gitkeep` is restored.
+
+### Notes
+
+- SAM 3.1 still tracks each object on its own memory bank. The multiplex decoder is used with one slot. Grouping objects into batches of 16 is not a default and is not switched on here.
+
+## [1.7.0] - 2026-09-23
+
+### Added
+
+- **Save Session** and **Load Session** store the raw prompts and rebuild them on the current model and video.
+- `--mask_select official` uses the SAM tracking mask rule. The default remains `legacy`.
+- `--lost_patience` waits for consecutive low scores before a target is lost. The default remains 1.
+- `--max_prompt_attn` limits how many SAM 3 / 3.1 prompt memories are used on each frame.
+- `--intensity_range auto|full|low,high` scales 16-bit stills with one mapping for the whole sequence. The values used are written to `source_info.json`.
+- `--encode_cache_mb` caps the CPU image-encoding cache. SAM 3 and 3.1 no longer keep the unused detector features in that cache or on the GPU.
+- Metric rows include frame gap, time step, component count, and a `qc_flag`. The first sample and gaps longer than the export setting have no velocity.
+
+### Changed
+
+- The overlay video reads frames through the same source as playback, so TIFF stacks and image folders are no longer black.
+- Removing an object that has prompts or recorded labels asks for confirmation. The keyboard shortcut is **Shift+`-`**.
+- Closing the window can be cancelled. If dialogs are unavailable, recorded labels are auto-saved instead of discarded. Quitting with stored prompts and nothing recorded asks first.
+- A frame is recorded once every prompted object has a tracker mask for that frame, including the frame where the prompts were stored.
+
+## [1.6.1] - 2026-09-23
+
+### Fixed
+
+- Export parameters stay bound to the export dialog after the user guide has been opened. FPS and pixel size follow what is typed.
+- Label TIFF read/write and still-image or TIFF-stack input work when the path contains non-ASCII characters.
+- Switching the model or the video asks before discarding unsaved recorded frames. A failed load keeps the current model or video.
+- An unexpected error pauses playback and writes a log under `error_logs/`. Repeated errors, or closing the window during an error, auto-save the recorded labels.
+- SAM 2, SAM 3, and SAM 3.1 position-encoding caches no longer crash when a later frame has the same token height and a different width.
+- SAM 2 memory RoPE is rebuilt when a token grid is transposed. SAM 3 and SAM 3.1 scale the horizontal and vertical RoPE axes with the matching token dimension.
+- Space keeps controlling the video that is currently open. The previous reader is no longer left bound to that key.
+- A damaged `.history` file is backed up and reset instead of preventing startup. History is replaced atomically, stored beside `main.py`, and a model path is recorded only after that model loads.
+- `-m` no longer falls back to the previous model when the requested file or name does not match. A path is not stripped of apostrophes that belong to a folder name.
+
 ## [1.6.0] - 2026-09-22
 
 ### Added
@@ -163,13 +224,17 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
-[1.6.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.6.0
-[1.5.1]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.5.1
-[1.5.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.5.0
-[1.4.2]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.2
-[1.4.1]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.1
-[1.4.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.4.0
-[1.3.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.3.0
-[1.2.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.2.0
-[1.1.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.1.0
-[1.0.0]: https://github.com/your-username/micro-tracker-3/releases/tag/v1.0.0
+[1.8.1]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.8.1
+[1.8.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.8.0
+[1.7.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.7.0
+[1.6.1]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.6.1
+[1.6.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.6.0
+[1.5.1]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.5.1
+[1.5.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.5.0
+[1.4.2]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.4.2
+[1.4.1]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.4.1
+[1.4.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.4.0
+[1.3.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.3.0
+[1.2.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.2.0
+[1.1.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.1.0
+[1.0.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.0.0

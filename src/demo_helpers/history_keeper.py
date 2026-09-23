@@ -5,8 +5,10 @@
 # ---------------------------------------------------------------------------------------------------------------------
 # %% Imports
 
+import contextlib
 import os
 import json
+import time
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -37,9 +39,22 @@ class HistoryKeeper:
         """Load and store results from an existing history file"""
 
         try:
-            with open(self._filepath, "r") as infile:
+            with open(self._filepath, "r", encoding="utf-8") as infile:
                 history_dict = json.load(infile)
+            if not isinstance(history_dict, dict):
+                history_dict = {}
         except FileNotFoundError:
+            history_dict = {}
+        except (OSError, ValueError):
+            backup = f"{self._filepath}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+            with contextlib.suppress(OSError):
+                os.replace(self._filepath, backup)
+            print(
+                "",
+                f"Warning: history file was unreadable and has been reset (backup: {backup})",
+                sep="\n",
+                flush=True,
+            )
             history_dict = {}
         self._history_dict = history_dict
 
@@ -56,18 +71,22 @@ class HistoryKeeper:
 
         # Check if we can store the new value (validate the dict we actually intend to write!)
         new_history_dict = {**self._history_dict, **key_value_kwargs}
-        is_valid_json = False
         try:
-            json.dumps(new_history_dict)
-            is_valid_json = True
+            encoded = json.dumps(new_history_dict, indent=2)
         except TypeError:
-            is_valid_json = False
             print("", "ERROR - Cannot store history, invalid as json:", new_history_dict, sep="\n")
+            return self
 
-        # Only re-write history data if the json is valid
-        if is_valid_json:
-            with open(self._filepath, "w") as outfile:
-                json.dump(new_history_dict, outfile, indent=2)
+        # Replace the file atomically so a crash mid-write cannot leave a truncated history.
+        tmp_path = self._filepath + ".tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as outfile:
+                outfile.write(encoded)
+            os.replace(tmp_path, self._filepath)
             self._history_dict = new_history_dict
+        except OSError as err:
+            print("", f"Warning: could not save history ({err})", sep="\n", flush=True)
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
 
         return self

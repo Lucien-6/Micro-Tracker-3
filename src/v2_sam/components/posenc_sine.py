@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Local modification (Lucien, 2026-09-23): see src/VENDORED.md.
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -54,7 +55,7 @@ class SinusoidalPE2D(nn.Module):
 
         # Re-generate cached result if needed
         cache_h, cache_w = self.cached_posenc_bchw.shape[-2:]
-        if cache_h != height or cache_w != width in self.cache:
+        if cache_h != height or cache_w != width:
 
             # For convenience
             device, dtype = self.cached_posenc_bchw.device, self.cached_posenc_bchw.dtype

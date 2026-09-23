@@ -55,6 +55,36 @@ def get_default_device_string():
     return default_device
 
 
+SAM2_NATIVE_SIDE = 1024
+SAM3_NATIVE_SIDE = 1008
+SAM3_SIDE_MULTIPLE = 336
+DEFAULT_ENCODE_SIDE = 1344
+
+
+def native_encode_side(model_family: str) -> int:
+    """Native longest side for an explicit -b. SAM 2 is 1024; SAM 3 and 3.1 are 1008."""
+
+    if model_family == "v2":
+        return SAM2_NATIVE_SIDE
+    return SAM3_NATIVE_SIDE
+
+
+def resolve_encode_side(explicit_side: int | None) -> int:
+    """Side used when encoding. An omitted -b stays at 1344 until an A/B comparison decides otherwise."""
+
+    if explicit_side is None:
+        return DEFAULT_ENCODE_SIDE
+    return int(explicit_side)
+
+
+def encode_side_warning(model_family: str, side: int) -> str | None:
+    """SAM 3 window alignment warning. None when the side needs no warning."""
+
+    if model_family in ("v3", "v3p1") and int(side) % SAM3_SIDE_MULTIPLE != 0:
+        return f"SAM 3 encode side {int(side)} is not a multiple of {SAM3_SIDE_MULTIPLE}."
+    return None
+
+
 def make_device_config(device_str, use_float32, use_channels_last=True, prefer_bfloat16=True):
     """Helper used to construct a dict for device usage. Meant to be used with 'model.to(**config)'"""
 

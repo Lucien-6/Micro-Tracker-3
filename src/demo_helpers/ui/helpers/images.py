@@ -336,7 +336,7 @@ def get_image_hw_for_max_side_length(image, max_side_length=800) -> tuple[int, i
     """
 
     img_h, img_w = image.shape[0:2]
-    scale = min(max_side_length / img_h, max_side_length / img_h)
+    scale = min(max_side_length / img_h, max_side_length / img_w)
     out_h = round(scale * img_h)
     out_w = round(scale * img_w)
 

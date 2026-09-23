@@ -18,6 +18,9 @@ from collections import OrderedDict
 
 import cv2
 import numpy as np
+import tifffile
+
+from .image_io import imread_unicode
 
 # For type hints
 from numpy import ndarray
@@ -58,21 +61,30 @@ def is_image_sequence_path(path: str) -> bool:
     return osp.splitext(path)[1].lower() in IMAGE_EXTENSIONS
 
 
-def open_frame_source(path: str):
+def open_frame_source(path: str, intensity_range: str | tuple[float, float] = "auto"):
     """
     Open a video file, a TIFF stack, a still image, or a folder of stills.
 
     Video containers stay on the OpenCV video reader. Image paths use ImageSequenceReader.
+    intensity_range applies to 16-bit stills: "auto", "full", or (low, high).
     """
 
     from .ui.video import ReversibleLoopingVideoReader
 
     if osp.isdir(path) or osp.splitext(path)[1].lower() in IMAGE_EXTENSIONS:
-        return ImageSequenceReader(path)
+        return ImageSequenceReader(path, intensity_range=intensity_range)
     return ReversibleLoopingVideoReader(path)
 
 
-def to_bgr_uint8(image: ndarray) -> ndarray:
+def make_uint16_lut(low: float, high: float) -> ndarray:
+    """Map uint16 values from [low, high] onto 0..255. One table is shared by every frame."""
+
+    span = max(float(high) - float(low), 1.0)
+    values = np.arange(65536, dtype=np.float32)
+    return np.clip((values - float(low)) * (255.0 / span), 0, 255).astype(np.uint8)
+
+
+def to_bgr_uint8(image: ndarray, uint16_lut: ndarray | None = None) -> ndarray:
     """Convert a decoded still to 3-channel uint8 BGR for the display and the model."""
 
     if image.ndim == 2:
@@ -81,44 +93,60 @@ def to_bgr_uint8(image: ndarray) -> ndarray:
         image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
 
     if image.dtype == np.uint16:
-        image = (image >> 8).astype(np.uint8)
+        if uint16_lut is None:
+            image = (image.astype(np.float32) * (255.0 / 65535.0)).astype(np.uint8)
+        else:
+            image = uint16_lut[image]
     elif image.dtype != np.uint8:
         image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     return np.ascontiguousarray(image)
 
 
-def read_tiff_page(path: str, index: int) -> ndarray | None:
-    """Read one page from a multipage TIFF. Returns None when the page does not exist."""
+def read_tiff_page(
+    path: str, index: int, encoded: ndarray | None = None
+) -> tuple[ndarray | None, ndarray | None]:
+    """
+    Read one TIFF page.
 
-    ok, pages = cv2.imreadmulti(path, start=int(index), count=1, flags=cv2.IMREAD_UNCHANGED)
+    Returns (page, encoded_bytes). encoded_bytes is set when decoding had to
+    use the in-memory OpenCV fallback, so the caller can reuse those bytes.
+    The page is None when it does not exist or cannot be decoded.
+    """
+
+    index = int(index)
+    if encoded is None:
+        try:
+            with tifffile.TiffFile(path) as tif:
+                if index < 0 or index >= len(tif.pages):
+                    return None, None
+                page = tif.pages[index].asarray()
+                if page is not None and page.size > 0:
+                    return page, None
+        except Exception:
+            pass
+        try:
+            encoded = np.fromfile(path, dtype=np.uint8)
+        except OSError:
+            return None, None
+    if encoded is None or encoded.size == 0:
+        return None, encoded
+    ok, pages = cv2.imdecodemulti(encoded, cv2.IMREAD_UNCHANGED, None, (index, index + 1))
     if not ok or pages is None or len(pages) == 0:
-        return None
+        return None, encoded
     page = pages[0]
     if page is None or page.size == 0:
-        return None
-    return page
+        return None, encoded
+    return page, encoded
 
 
 def tiff_page_count(path: str) -> int:
-    """Count TIFF pages with a logarithmic probe so the whole stack is not decoded up front."""
+    """Count TIFF pages without decoding them."""
 
-    if read_tiff_page(path, 0) is None:
+    try:
+        with tifffile.TiffFile(path) as tif:
+            return len(tif.pages)
+    except Exception:
         return 0
-
-    upper = 1
-    while read_tiff_page(path, upper) is not None:
-        upper *= 2
-        if upper > 1_000_000:
-            break
-
-    lower = upper // 2
-    while lower + 1 < upper:
-        middle = (lower + upper) // 2
-        if read_tiff_page(path, middle) is not None:
-            lower = middle
-        else:
-            upper = middle
-    return lower + 1
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -133,13 +161,17 @@ class ImageSequenceReader:
     the export dialog asks for the frame rate used in the metrics.
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, intensity_range: str | tuple[float, float] = "auto"):
         self._video_path = path
         self._is_reversed = False
         self._is_paused = False
         self._frame_idx = 0
         self._frame_buffer: OrderedDict[int, ndarray] = OrderedDict()
         self._frame_buffer_max = 0
+        self._tiff_encoded: ndarray | None = None
+        self._intensity_range = intensity_range
+        self._uint16_lut: ndarray | None = None
+        self.source_info: dict | None = None
 
         if osp.isdir(path):
             self._paths = list_image_files(path)
@@ -156,7 +188,7 @@ class ImageSequenceReader:
                 self._tiff_path = path
                 self._page_count = count
             else:
-                image = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                image = imread_unicode(path, cv2.IMREAD_UNCHANGED)
                 if image is None:
                     raise IOError(f"Can't read image: {path}")
                 self._paths = [path]
@@ -165,6 +197,7 @@ class ImageSequenceReader:
         self.total_frames = self._page_count if self._tiff_path else len(self._paths)
         self._max_frame_idx = self.total_frames - 1
         self._fps = 0.0
+        self._prepare_intensity()
 
         first = self._read_frame_at(0)
         if first is None:
@@ -241,15 +274,71 @@ class ImageSequenceReader:
             return cached
 
         if self._tiff_path is not None:
-            raw = read_tiff_page(self._tiff_path, frame_idx)
+            raw, encoded = read_tiff_page(self._tiff_path, frame_idx, self._tiff_encoded)
+            if encoded is not None:
+                self._tiff_encoded = encoded
         else:
-            raw = cv2.imread(self._paths[frame_idx], cv2.IMREAD_UNCHANGED)
+            raw = imread_unicode(self._paths[frame_idx], cv2.IMREAD_UNCHANGED)
         if raw is None:
             return None
 
-        frame = to_bgr_uint8(raw)
+        frame = to_bgr_uint8(raw, self._uint16_lut)
         self._store_buffer(frame_idx, frame)
         return frame
+
+    def read_frame(self, frame_idx: int) -> ndarray | None:
+        """Return one display frame, or None when it cannot be decoded."""
+
+        frame = self._read_frame_at(int(frame_idx))
+        return None if frame is None else frame.copy()
+
+    def _prepare_intensity(self) -> None:
+        """Build one uint16 lookup table for the whole sequence."""
+
+        count = max(self.total_frames, 1)
+        sample_count = min(16, count)
+        if sample_count == 1:
+            indices = [0]
+        else:
+            indices = [int(round(i * (count - 1) / (sample_count - 1))) for i in range(sample_count)]
+        samples = []
+        for index in indices:
+            raw = self._raw_frame(index)
+            if raw is not None and raw.dtype == np.uint16:
+                samples.append(raw)
+        if len(samples) == 0:
+            return
+
+        mode = self._intensity_range
+        if isinstance(mode, tuple):
+            low, high = float(mode[0]), float(mode[1])
+            mode_name = "manual"
+        elif mode == "full":
+            low, high = 0.0, 65535.0
+            mode_name = "full"
+        else:
+            flat = [sample.reshape(-1) for sample in samples]
+            merged = np.concatenate([values[:: max(1, values.size // 200_000)] for values in flat])
+            low, high = (float(value) for value in np.percentile(merged, (0.1, 99.9)))
+            mode_name = "auto"
+        if high <= low:
+            high = low + 1.0
+        self._uint16_lut = make_uint16_lut(low, high)
+        self.source_info = {
+            "intensity_mode": mode_name,
+            "uint16_low": low,
+            "uint16_high": high,
+        }
+
+    def _raw_frame(self, frame_idx: int) -> ndarray | None:
+        if self._tiff_path is not None:
+            raw, encoded = read_tiff_page(self._tiff_path, frame_idx, self._tiff_encoded)
+            if encoded is not None:
+                self._tiff_encoded = encoded
+            return raw
+        if self._paths is None or not (0 <= frame_idx < len(self._paths)):
+            return None
+        return imread_unicode(self._paths[frame_idx], cv2.IMREAD_UNCHANGED)
 
     def set_playback_position(self, position: int | float, is_normalized=False) -> int:
         frame_idx = round(position * self._max_frame_idx) if is_normalized else int(position)

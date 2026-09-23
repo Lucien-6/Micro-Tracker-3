@@ -4,6 +4,7 @@
 
 # Session data
 .history
+error_logs/
 
 # Model weights (local only — never commit checkpoint files)
 model_weights/**

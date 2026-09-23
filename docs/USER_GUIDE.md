@@ -1,7 +1,7 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.6.0  
-**Last updated:** 2026-09-22  
+**Version:** 1.8.1  
+**Last updated:** 2026-09-23  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
 This document mirrors the in-app guide (press **H** while the main window is focused; switch **English / 中文** in the guide window). For installation and repository layout, see [README.md](../README.md).
@@ -18,7 +18,7 @@ Micro Tracker 3 is an interactive desktop tool for:
 
 The app supports up to **255 object slots**, each with its own prompt memory and optional frame history.
 
-**Code layout (v1.3.0+):** SAM inference and UI helpers live under `src/` (formerly `muggled_sam/`). Run `python main.py` from the repository root; extend the app with `from src...` imports.
+**Code layout (v1.3.0+):** SAM inference and UI helpers live under `src/` (formerly `muggled_sam/`). `python main.py` resolves `src` from the folder that contains `main.py`. Extend the app with `from src...` imports.
 
 ---
 
@@ -125,7 +125,7 @@ SAM outputs an **object score** per frame. Low scores mean the model is unsure t
 - Masks are still **zeroed** on low-score frames.
 - Frame history is not updated on low-score frames (same as default on those frames).
 
-Adjust sensitivity with `--objscore_threshold` (higher = stricter “lost” detection).
+Adjust sensitivity with `--objscore_threshold` (higher = stricter “lost” detection). `--lost_patience N` waits for N consecutive low-score frames before stopping (default 1). `--mask_select official` chooses the mask the way SAM 2/3 tracking does. `--max_prompt_attn 4` limits SAM 3 / 3.1 to four prompt memories per frame.
 
 ---
 
@@ -143,22 +143,22 @@ Adjust sensitivity with `--objscore_threshold` (higher = stricter “lost” det
 | **33–255** | The object grid keeps the **same row height** as when 32 objects are shown; **mouse wheel** over the grid scrolls extra rows. Enable Recording, Add/Remove, and Save/Clear stay fixed above and below the list. |
 | **Selection** | The **active** object scrolls into view when you pick a slot (sidebar click, **W** / **S**, **↑** / **↓**, or middle-click on a tracked mask). |
 
-Add slots with **+** or **Add Object**; remove with **-** or **Remove Object** (at least one slot always remains).
+Add slots with **+** or **Add Object**; remove with **Shift+`-`** or **Remove Object** (at least one slot always remains).
 
 Click targets are kept in sync with the visible buttons after each UI redraw and when you scroll the list (v1.4.1+).
 
 ---
 
-## 6c. Feedback, undo, and session memory
+## 7. Feedback, undo, and session memory
 
 - **Toast notifications** — Short, non-blocking messages appear **centered in the video area** for actions such as model/video load, store/clear prompts, add/remove object, history toggle, and **lost-target warnings**. They fade out automatically.
 - **Error dialogs** — Failures (e.g. could not save, metric/overlay export failed) appear as modal popups so they are not missed.
 - **Undo (Ctrl+Z)** — Removes the most recently added FG/BG point or box for the active object before it is stored. Repeat to step back through the prompts.
-- **Session memory (`.history`)** — Restores display size, last save folder, Enable History, object-score threshold, square/aspect sizing, and pixel size when those options are **omitted** on the command line. Passing a value, including the built-in default, overrides the saved one. `--square` forces square padding; `-ar` forces the original aspect ratio.
+- **Session memory (`.history`)** — Restores display size, last save folder, Enable History, object-score threshold, square/aspect sizing, and pixel size when those options are **omitted** on the command line. Passing a value, including the built-in default, overrides the saved one. `--square` stretches each frame to a square; `-ar` forces the original aspect ratio.
 
 ---
 
-## 6d. Performance (scrubbing and reverse playback)
+## 8. Performance (scrubbing and reverse playback)
 
 - **Encode cache** (`--encode_cache_size`, default 64) — Image encodings are cached on the CPU and reused, so scrubbing, frame stepping, and reverse playback avoid re-encoding visited frames.
 - **Reverse frame buffer** (`--reverse_buffer_size`, default 120) — Decoded frames are buffered for smoother reverse playback and stepping.
@@ -166,7 +166,7 @@ Click targets are kept in sync with the visible buttons after each UI redraw and
 
 ---
 
-## 7. Playback and timeline
+## 9. Playback and timeline
 
 | Control | Action |
 | --- | --- |
@@ -180,7 +180,7 @@ While scrubbing, on-screen masks are cleared temporarily; after release, trackin
 
 ---
 
-## 7b. Keyboard and mouse (summary)
+## 10. Keyboard and mouse
 
 Press **F1** in the main window for the full shortcut panel. Common bindings:
 
@@ -195,7 +195,7 @@ Press **F1** in the main window for the full shortcut panel. Common bindings:
 | C | Clear on-screen prompts |
 | ← / → or A / D | Step one frame (paused) |
 | W / S or ↑ / ↓ | Previous / next object |
-| + / − | Add / remove object slot |
+| + / Shift+− | Add object / remove object (asks when the slot has prompts or labels) |
 | [ / ] | Zoom display out / in |
 | Mouse wheel (object grid, 33+ objects) | Scroll object list |
 | Middle-click | Select object under mask |
@@ -203,7 +203,7 @@ Press **F1** in the main window for the full shortcut panel. Common bindings:
 
 ---
 
-## 8. Export
+## 11. Export
 
 1. Enable **Enable Recording** during tracking.
 2. Click **Save Results** — choose a folder.
@@ -218,27 +218,29 @@ Output folder: `{video_basename}_MT-Results_{YYYYMMDD-HHMMSS}/`
 | `frame_index.csv` | Maps each TIFF filename to `frame_index` and `time_s`. |
 | `tracking_metrics.csv` | Per frame and object: centroid (px and µm), area, orientation angle (long axis of the fitted ellipse vs. +X, from image moments), velocity, displacement. |
 | `tracking_msd.csv` | Time-averaged Mean Squared Displacement per object. |
-| `tracking_overlay.mp4` | One overlay video: each object drawn with a unique contour color and a fading ~20-frame trajectory. Written only when a source video is loaded. |
+| `tracking_overlay.mp4` | One overlay video: each object drawn with a unique contour color and a fading ~20-frame trajectory. Sixteen colors then repeat by object id. Written for video, TIFF stacks, and image folders; a missing source frame is black. |
 
 Only frames visited while recording are saved. Lost objects contribute **background (0)** on frames where their mask is zero. In the overlay video, an object's trajectory is shown only while it is in view; once the object leaves the field of view, its trajectory disappears.
 
-Physical units (µm, µm/s, µm²) depend on the fps and µm/pixel values you enter; centroid is also reported in pixels.
+Physical units (µm, µm/s, µm²) depend on the fps and µm/pixel values you enter; centroid is also reported in pixels. The first sample of each object has no velocity. A frame gap larger than the export dialog's max gap also leaves velocity blank. Orientation is measured in image coordinates, so a positive angle is clockwise because y increases downward.
+
+16-bit TIFF stacks and image folders are scaled with one intensity mapping for the whole sequence (`--intensity_range auto` by default). Save Session stores the raw prompts plus the model path, encode side, and square setting. Load Session applies those settings, then re-encodes the prompts. Older session files that omit them keep the current model and encode settings. Shift+`-` removes an object that already has prompts or labels, after a confirmation.
 
 ---
 
-## 9. Command-line reference
+## 12. Command-line reference
 
 ```text
 python main.py [OPTIONS]
 
-  -i, --video_path PATH       Input video (optional; GUI picker otherwise)
+  -i, --video_path PATH       Input video, TIFF stack, or image folder (optional; GUI picker otherwise)
   -m, --model_path PATH       SAM weights (default: model_weights/)
   -d, --device DEVICE         cuda | mps | cpu
   -s, --display_size PX       UI size. Omit to reuse the saved size; pass 900 to force the default.
-  -b, --base_size_px PX       Encoder longest side (default: 1344)
+  -b, --base_size_px PX       Encoder longest side (default 1344). Native: 1024 (SAM 2), 1008 (SAM 3 / 3.1)
   -ar, --use_aspect_ratio     Keep video aspect ratio (overrides the saved choice)
-  --square                    Force square padding (overrides the saved choice)
-  -f32, --use_float32         Float32 weights (more VRAM)
+  --square                    Stretch each frame to a square (overrides the saved choice)
+  -f32, --use_float32         Float32 on GPU (more VRAM). CPU already uses float32
   --max_memories N            Frame history depth (default: 6)
   --objscore_threshold F      Score below = lost. Omit to reuse the saved value; pass 0 to force the default.
   --keep_bad_objscores        Keep inferencing after loss (masks still zeroed)
@@ -246,6 +248,11 @@ python main.py [OPTIONS]
                               Retain frame history when adding new prompts
   --encode_cache_size N       CPU encode cache size (0 disables, default 64)
   --reverse_buffer_size N     Reverse-playback frame buffer (0 disables, default 120)
+  --mask_select MODE          legacy (default) or official
+  --lost_patience N           Consecutive low scores before a target is lost (default 1)
+  --max_prompt_attn N         SAM 3 / 3.1 prompt memories per frame (default: all)
+  --intensity_range SPEC      16-bit stills: auto, full, or low,high
+  --encode_cache_mb N         CPU encode-cache megabyte cap (default 2048)
 ```
 
 **In-app (recommended):** Press **H** for the tkinter user guide (English / 中文, non-modal).  
@@ -254,7 +261,7 @@ python main.py [OPTIONS]
 
 ---
 
-## 10. Microscopy tips
+## 13. Microscopy tips
 
 - Store prompts on a **sharp, in-focus** frame when possible.
 - Use **FG/BG** for irregular cells; **boxes** for round cells.
@@ -263,6 +270,6 @@ python main.py [OPTIONS]
 
 ---
 
-## 11. Version history
+## 14. Version history
 
 See [CHANGELOG.md](../CHANGELOG.md).

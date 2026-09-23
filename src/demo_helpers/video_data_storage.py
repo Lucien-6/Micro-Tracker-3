@@ -24,6 +24,10 @@ class SAMVideoMemoryBank:
     def __init__(self, max_frame_memory: int = 6, max_prompt_memory: int = 32):
         self.frame_memory = deque([], maxlen=max_frame_memory)
         self.prompt_memory = deque([], maxlen=max_prompt_memory)
+        self.prompt_frame_indices = deque([], maxlen=max_prompt_memory)
+        self.prompt_specs: deque = deque([], maxlen=max_prompt_memory)
+        self.low_score_streak = 0
+        self.first_low_frame_idx: int | None = None
         # First frame index where object score fell below threshold; inference is skipped while
         # frame_idx >= this value until reconcile clears it or Store Prompt adds new prompts.
         self.tracking_stop_frame_idx: int | None = None
@@ -32,9 +36,12 @@ class SAMVideoMemoryBank:
         self.last_tracked_frame_idx: int | None = None
         self.track_direction: int | None = None
 
-    def store_prompt_result(self, memory_encoding: list[Tensor]):
-        """Used to store prompt memory encodings"""
+    def store_prompt_result(self, memory_encoding: list[Tensor], frame_idx: int | None = None, prompt_spec: dict | None = None):
+        """Store one prompt encoding, the frame it came from, and the raw prompts used to rebuild it."""
+
         self.prompt_memory.append(memory_encoding)
+        self.prompt_frame_indices.append(-1 if frame_idx is None else int(frame_idx))
+        self.prompt_specs.append(prompt_spec)
         return self
 
     def store_frame_result(self, memory_encoding: list[Tensor]):
@@ -47,6 +54,8 @@ class SAMVideoMemoryBank:
         self.frame_memory.clear()
         self.last_tracked_frame_idx = None
         self.track_direction = None
+        self.low_score_streak = 0
+        self.first_low_frame_idx = None
         return self
 
     def begin_frame(self, frame_idx: int, direction: int) -> str:
@@ -96,7 +105,11 @@ class SAMVideoMemoryBank:
             self.discard_frame_memory()
         if clear_prompt_memory:
             self.prompt_memory.clear()
+            self.prompt_frame_indices.clear()
+            self.prompt_specs.clear()
         self.tracking_stop_frame_idx = None
+        self.low_score_streak = 0
+        self.first_low_frame_idx = None
         return self
 
     def clear_tracking_stop_frame(self):
@@ -107,6 +120,33 @@ class SAMVideoMemoryBank:
         """Clear tracking_stop_frame_idx when the playhead is before the first loss frame index."""
         if self.tracking_stop_frame_idx is not None and frame_idx < self.tracking_stop_frame_idx:
             self.tracking_stop_frame_idx = None
+
+    def note_score(self, frame_idx: int, is_low: bool, patience: int) -> bool:
+        """
+        Count consecutive low-score frames.
+
+        Returns True when the object has just become lost. patience 1 matches
+        the historical first-low-frame stop.
+        """
+
+        if not is_low:
+            self.low_score_streak = 0
+            self.first_low_frame_idx = None
+            return False
+        if self.low_score_streak == 0:
+            self.first_low_frame_idx = int(frame_idx)
+        self.low_score_streak += 1
+        if self.low_score_streak >= max(1, int(patience)) and self.tracking_stop_frame_idx is None:
+            self.tracking_stop_frame_idx = self.first_low_frame_idx
+            return True
+        return False
+
+    def prompt_encodings_for_frame(self, frame_idx: int, max_count: int | None):
+        """Prompt encodings to condition on, optionally capped to the closest ones."""
+
+        from .tracking_policy import select_prompt_encodings
+
+        return select_prompt_encodings(self.prompt_frame_indices, self.prompt_memory, frame_idx, max_count)
 
     def set_tracking_stop_frame(self, frame_idx: int) -> None:
         """Remember the first loss frame (only the first assignment is kept until reconcile or clear)."""

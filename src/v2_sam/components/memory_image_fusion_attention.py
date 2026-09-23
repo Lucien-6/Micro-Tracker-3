@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Local modification (Lucien, 2026-09-23): see src/VENDORED.md.
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -208,6 +209,7 @@ class RPEComplexEncoder(nn.Module):
         # Allocate storage for caching results, so we don't re-compute position encodings repeatedly
         # (encodings don't change for a fixed sized input, e.g. video frames)
         self.register_buffer("rotvectors", torch.empty(1, 1, 1, 1), persistent=False)
+        self._rotvectors_hw = (0, 0)
 
     # .................................................................................................................
 
@@ -235,11 +237,12 @@ class RPEComplexEncoder(nn.Module):
         # -> Tokens assumed to have shape: Batch, Heads, NumTokens, Features/channels
         bq, hq, nq, cq = q.shape
         bk, hk, nk, ck = k.shape
-        n_vec = self.rotvectors.shape[2]
 
-        # Re-build rotation vectors if needed
-        if n_vec != nq:
+        # Re-build rotation vectors when the token grid changes, including a transpose
+        # of the same token count (width and height swapped).
+        if tuple(q_tokens_hw) != self._rotvectors_hw:
             self.rotvectors = self.get_rotation_vectors(q_tokens_hw)
+            self._rotvectors_hw = (int(q_tokens_hw[0]), int(q_tokens_hw[1]))
 
         # Convert each consecutive feature value pair into 'xy' format and rotate
         q_as_xy = torch.view_as_complex(q.float().reshape(bq, hq, nq, cq // 2, 2))

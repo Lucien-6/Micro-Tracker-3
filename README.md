@@ -6,7 +6,7 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_sam](https://github.com/heyoeyo/muggled_sam); SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.6.0](CHANGELOG.md) (2026-09-22) · **Author:** Lucien · **License:** [MIT](LICENSE) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.8.1](CHANGELOG.md) (2026-09-23) · **Author:** Lucien · **License:** [MIT](LICENSE) for this application; Apache-2.0 for the vendored SAM code ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -23,26 +23,26 @@ Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_
 | **Export** | Frame-index label TIFFs (`00240.tif`), `frame_index.csv`, metrics CSV, MSD CSV, and an overlay video; **Retry Metrics** finishes a failed analysis export |
 | **Analysis** | Per-frame centroid, area, orientation (fitted-ellipse long axis), velocity, displacement, and MSD |
 | **Feedback** | On-screen **toast** messages centered in the video; modal dialogs for errors; live **save progress** window |
-| **Editing** | **Ctrl+Z** undo for the last prompt; expanded session persistence (`.history`) |
+| **Editing** | **Ctrl+Z** undo for the last prompt; **Save / Load Session** keeps prompts with the model path, encode side, and square setting; `.history` restores display options |
 | **Models** | Auto-detects SAM 2, SAM 3, or SAM 3.1 weights (`.pt` / `.pth`) |
-| **Hardware** | CUDA, Apple MPS, or CPU; default bfloat16 for lower VRAM use |
+| **Hardware** | CUDA, Apple MPS, or CPU. GPU default is bfloat16. CPU stays float32 |
 | **Help** | **H** — tkinter user guide (English / 中文); **F1** — keyboard shortcuts panel |
 
 ---
 
 ## Requirements
 
-- **Python** 3.10+ recommended
+- **Python** 3.10 or newer
 - **PyTorch** ≥ 2.1 (with CUDA or MPS if available)
 - **OpenCV** ≥ 4.5, &lt; 4.14
 - **NumPy** ≥ 1.21
-- **tkinter** (optional, for native file/folder dialogs; usually included with Python on Windows)
+- **tkinter** (required for dialogs, saving, and the in-app user guide; included with Python on Windows)
 
 ### Hardware notes
 
 - A **GPU with sufficient VRAM** is strongly recommended for real-time tracking.
-- Default inference uses **bfloat16**; pass `-f32` to force float32 (roughly doubles VRAM).
-- Default encoding resolution uses a **1344 px** longest side (`-b` to change).
+- GPU inference uses **bfloat16** unless you pass `-f32` (roughly doubles VRAM). CPU inference stays **float32**.
+- The default encoding side is **1344** px. Pass `-b 1024` for SAM 2's native side, or `-b 1008` for SAM 3 / 3.1.
 
 ---
 
@@ -51,8 +51,8 @@ Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/micro-tracker-3.git
-cd micro-tracker-3
+git clone https://github.com/Lucien-6/Micro-Tracker-3.git
+cd Micro-Tracker-3
 ```
 
 ### 2. Create a virtual environment (recommended)
@@ -108,7 +108,7 @@ Launch the application (video can be selected inside the GUI):
 python main.py
 ```
 
-Run from the repository root so the `src/` package resolves. If you extend the project, import modules as `from src.make_sam import ...` (not `muggled_sam`).
+`python main.py` resolves `src` from the folder that contains `main.py`, so the shell does not have to start in that folder. Import modules as `from src.make_sam import ...` (not `muggled_sam`).
 
 Or specify resources on the command line:
 
@@ -118,9 +118,9 @@ python main.py -i path/to/video.mp4 -m model_weights/sam2_hiera_large.pt
 
 On first run, the app resolves the model from (in order):
 
-1. `-m / --model_path` if the file exists  
-2. Last path stored in `.history`  
-3. The only file in `model_weights/`, or the newest match  
+1. `-m / --model_path` when it is an existing file, or the unique file in `model_weights/` whose name contains that text. A selector that matches nothing is an error.
+2. With no `-m`, the path stored in `.history` when that file still exists.
+3. The other files in `model_weights/`, in name order.  
 
 ---
 
@@ -129,7 +129,7 @@ On first run, the app resolves the model from (in order):
 ```text
   ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
   │ Load video  │ ──► │ Pause & annotate │ ──► │ Store Prompt    │
-  │  (+ model)  │     │ (box / FG / BG)  │     │ (Enter / btn) │
+  │  (+ model)  │     │ (box / FG / BG)  │     │ (Enter / btn)   │
   └─────────────┘     └──────────────────┘     └────────┬────────┘
                                                         │
                         ┌──────────────────┐            ▼
@@ -148,6 +148,7 @@ On first run, the app resolves the model from (in order):
 6. **Track** — Press **Track** or Space to play forward; masks propagate automatically each frame. If a target is lost (low object score), tracking for that object stops by default until you move to an earlier frame or store new prompts.
 7. **Record** — Enable **Enable Recording** to buffer label frames in memory.
 8. **Export** — Click **Save Results**, confirm **frame rate** and **pixel size (µm/pixel)** in the export dialog, then the app writes the TIF label sequence plus the metrics CSV, MSD CSV, and overlay video. A progress window shows live status.
+9. **Save Session** — Stores the prompts together with the model file, encode side, and square setting. **Load Session** applies those settings and rebuilds the masks on the open video.
 
 Repeat steps 3–5 for additional objects before tracking.
 
@@ -168,7 +169,7 @@ Press **F1** inside the app for the full in-GUI reference. Summary:
 | `Ctrl+Z` | Undo the last added prompt (FG/BG point or box) |
 | `C` | Clear on-screen prompts (not stored memory) |
 | `↑` / `↓` or `W` / `S` | Previous / next object slot |
-| `+` / `-` | Add / remove object slot |
+| `+` / Shift+- | Add object / remove object |
 | `[` / `]` | Zoom display out / in |
 | Middle-click | Select object under cursor (tracked masks) |
 | `H` | Toggle user guide (tkinter, English / 中文) |
@@ -186,10 +187,10 @@ python main.py [OPTIONS]
   -m, --model_path PATH       SAM weights (optional; default: model_weights/)
   -d, --device DEVICE         cuda | mps | cpu (default: auto-detect)
   -s, --display_size PX       UI display size (default: 900)
-  -b, --base_size_px PX       Image encoder longest side (default: 1344)
+  -b, --base_size_px PX       Encoder longest side (default: 1344). Native: 1024 (SAM 2), 1008 (SAM 3 / 3.1)
   -ar, --use_aspect_ratio     Keep original aspect ratio (overrides the saved choice)
-  --square                    Force square padding (overrides the saved choice)
-  -f32, --use_float32         Use float32 instead of bfloat16
+  --square                    Stretch each frame to a square (overrides the saved choice)
+  -f32, --use_float32         Float32 on GPU. CPU already uses float32
   --max_memories N            Frame memory history length (default: 6)
   --objscore_threshold F      Object score below which target is treated as lost.
                               Omit to reuse the saved value; pass 0 to force the default.
@@ -200,6 +201,11 @@ python main.py [OPTIONS]
                               (0 disables, default: 64)
   --reverse_buffer_size N     Decoded-frame buffer for reverse playback / stepping
                               (0 disables, default: 120)
+  --mask_select MODE          legacy (default) or official
+  --lost_patience N           Consecutive low scores before a target is lost (default: 1)
+  --max_prompt_attn N         SAM 3 / 3.1 prompt memories used per frame (default: all)
+  --intensity_range SPEC      16-bit stills: auto, full, or low,high
+  --encode_cache_mb N         CPU encode-cache byte cap (default: 2048, 0 disables the cap)
 ```
 
 **Lost target (default):** On the first low-score frame, the app masks once, zeros the mask, and stops further inference for that object on that frame and later frames. Move the playhead before the loss frame or add new points/box and **Store Prompt** to resume. See [docs/USER_GUIDE.md](docs/USER_GUIDE.md#5-lost-targets-out-of-frame-defocus-occlusion).
@@ -249,7 +255,7 @@ The label sequence is compatible with common downstream tools (ImageJ, TrackMate
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.6.0)
+├── VERSION                   # Current release (1.8.1)
 ├── CHANGELOG.md
 ├── docs/
 │   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)
@@ -321,4 +327,4 @@ SAM model weights remain subject to their respective upstream licenses (Meta / m
 
 **Lucien** — [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
-For bugs and feature requests, please open a [GitHub Issue](https://github.com/your-username/micro-tracker-3/issues).
+For bugs and feature requests, please open a [GitHub Issue](https://github.com/Lucien-6/Micro-Tracker-3/issues).

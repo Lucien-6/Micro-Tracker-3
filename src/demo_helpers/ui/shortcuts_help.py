@@ -67,7 +67,7 @@ SHORTCUT_SECTIONS = (
             ("Up / Down", "Previous / next object slot"),
             ("W / S", "Previous / next object slot"),
             ("+ / =", "Add object slot"),
-            ("-", "Remove selected object slot"),
+            ("Shift+-", "Remove selected object slot (asks when it has data)"),
             ("Mouse wheel", "Scroll object list (33+ objects, over grid)"),
         ),
     ),
@@ -192,7 +192,7 @@ class ShortcutsHelpWindow:
     WINDOW_TITLE = "Micro Tracker 3 - Shortcuts"
     F1_KEYCODES = F1_KEYCODES
 
-    def __init__(self, offset_xy: tuple[int, int] = (40, 40), version: str = "1.6.0"):
+    def __init__(self, offset_xy: tuple[int, int] = (40, 40), version: str = "1.8.1"):
         self._offset_xy = offset_xy
         self._is_visible = False
         self._panel_bgr = _render_shortcuts_panel(version)

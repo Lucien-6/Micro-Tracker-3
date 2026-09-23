@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.6.0"
+__version__ = "1.8.1"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -15,6 +15,8 @@ import gc
 import os
 import os.path as osp
 import sys
+import traceback
+from datetime import datetime
 from time import perf_counter
 from enum import Enum
 from dataclasses import dataclass
@@ -43,17 +45,20 @@ from src.demo_helpers.ui.helpers.images import linear_gradient_image
 from src.demo_helpers.shared_ui_layout import PromptUIControl, PromptUI
 
 from src.demo_helpers.history_keeper import HistoryKeeper
-from src.demo_helpers.encode_cache import EncodedImageCache
+from src.demo_helpers.encode_cache import EncodedImageCache, strip_detector_branch
 from src.demo_helpers.exclusive_masks import resolve_overlapping_masks, suppress_lost_pixels
 from src.demo_helpers.image_sequence import open_frame_source
 from src.demo_helpers.loading import (
     clean_path_str,
-    resolve_default_model_path,
+    resolve_model_candidates,
     resolve_startup_settings,
+    ask_save_discard_cancel,
+    ask_yes_no,
+    parse_intensity_range,
     pick_model_file,
     pick_frame_source,
+    pick_save_path,
     pick_save_folder,
-    ask_save_unsaved_results,
     ask_export_parameters,
     show_message_dialog,
 )
@@ -66,9 +71,20 @@ from src.demo_helpers.saving import (
     make_mt_results_folder_name,
     save_tracking_label_tif_sequence,
 )
-from src.demo_helpers.misc import PeriodicVRAMReport, make_device_config, get_default_device_string
+from src.demo_helpers.misc import (
+    DEFAULT_ENCODE_SIDE,
+    PeriodicVRAMReport,
+    encode_side_warning,
+    get_default_device_string,
+    make_device_config,
+    resolve_encode_side,
+)
+from src.demo_helpers.sparse_labels import TrackingResultsBuffer
 from src.demo_helpers.analysis import export_tracking_analysis
+from src.demo_helpers.session import read_session, session_from_manager, write_session
+from src.demo_helpers.tracking_policy import model_family_name, select_mask_index
 from src.demo_helpers.ui.progress import ProgressWindow
+from src.demo_helpers.tk_host import close_tk_root
 from src.demo_helpers.model_info import get_token_hw, get_preencoding_hw
 
 
@@ -83,6 +99,9 @@ class MaskResults:
     preds: torch.Tensor
     idx: int = 0
     objscore: float = 0.0
+    frame_idx: int | None = None
+    source: str = "none"
+    version: int = 0
 
     @classmethod
     def create(cls, mask_predictions, mask_index=1, object_score=0.0):
@@ -93,15 +112,23 @@ class MaskResults:
     def clear(self):
         self.preds = torch.zeros_like(self.preds)
         self.objscore = 0.0
+        self.frame_idx = None
+        self.source = "none"
+        self.version += 1
         return self
 
-    def update(self, mask_predictions, mask_index, object_score=None):
+    def update(self, mask_predictions, mask_index, object_score=None, frame_idx=None, source=None):
         if mask_predictions is not None:
             self.preds = mask_predictions
         if mask_index is not None:
             self.idx = mask_index
         if object_score is not None:
             self.objscore = object_score
+        if frame_idx is not None:
+            self.frame_idx = int(frame_idx)
+        if source is not None:
+            self.source = source
+        self.version += 1
         return self
 
 
@@ -193,19 +220,105 @@ def create_placeholder_frame(h: int = 480, w: int = 640) -> np.ndarray:
 def load_sam_models(model_path: str, device_config_dict: dict):
     print("", "Loading model weights...", f"  @ {model_path}", sep="\n", flush=True)
     sam_core = make_sam_from_state_dict(model_path)
-    sam_core.to(**device_config_dict)
     interact_model = sam_core.get_interactive_context()
     track_model = sam_core.get_tracking_context()
+    # The tracking context owns every module the interactive path uses.
+    # Detector-only modules stay on CPU.
+    track_model.to(**device_config_dict)
     return sam_core, interact_model, track_model
 
 
-def unload_sam_model(sam_core):
-    del sam_core
+def release_sam_runtime() -> None:
+    """
+    Free cached GPU memory.
+
+    The caller must already have dropped every reference to the previous model,
+    its contexts, and encoded tensors. Deleting a local name here would not.
+    """
+
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     elif hasattr(torch, "mps") and torch.backends.mps.is_available():
         torch.mps.empty_cache()
+
+
+def write_error_log(message: str) -> str:
+    """Write an unexpected-error traceback next to the application."""
+
+    folder = osp.join(osp.dirname(osp.abspath(__file__)), "error_logs")
+    os.makedirs(folder, exist_ok=True)
+    path = osp.join(folder, f"error_{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(message)
+    return path
+
+
+def emergency_save_results(obj_mgr, video_path, history, video_fps: float, source_info=None) -> str | None:
+    """
+    Write in-memory labels without dialogs.
+
+    Used when the application is exiting because of an error, so a modal
+    dialog cannot be the only way to keep the recorded frames.
+    """
+
+    if not obj_mgr.results_buffer.has_data():
+        return None
+    parent = get_default_save_parent_folder(video_path, history)
+    fps_value = float(video_fps) if video_fps and video_fps > 0 else 30.0
+    pixel_size_um = 1.0
+    if history is not None:
+        has_val, stored_pixel = history.read("pixel_size_um")
+        if has_val and isinstance(stored_pixel, (int, float)) and stored_pixel > 0:
+            pixel_size_um = float(stored_pixel)
+    save_folder = osp.join(parent, make_mt_results_folder_name(get_video_base_name_for_save(video_path)) + "_AUTOSAVE")
+    save_folder, _num_saved = save_tracking_label_tif_sequence(
+        obj_mgr.results_buffer.frames_dict, save_folder, fps=fps_value, source_info=source_info
+    )
+    try:
+        export_tracking_analysis(
+            save_folder,
+            obj_mgr.results_buffer.frames_dict,
+            video_path,
+            fps_value,
+            pixel_size_um,
+        )
+    except Exception as err:
+        print("", f"Warning: emergency metric export failed: {err}", sep="\n", flush=True)
+    obj_mgr.results_buffer.clear()
+    print("", f"Auto-saved tracking labels @ {save_folder}", sep="\n", flush=True)
+    return save_folder
+
+
+def confirm_before_discarding_results(
+    action: str,
+    obj_mgr,
+    video_path,
+    window,
+    history,
+    toast,
+    video_fps,
+    source_info=None,
+    intensity_range="auto",
+) -> bool:
+    """Return True when it is safe to continue with action (results saved or discarded)."""
+
+    if not obj_mgr.results_buffer.has_data():
+        return True
+    choice = ask_save_discard_cancel(
+        f"There are unsaved tracking results in memory.\n\nSave them before you {action}?"
+    )
+    window.refocus()
+    if choice == "save":
+        return prompt_and_save_tracking_results(
+            obj_mgr, video_path, window, history, toast, video_fps, source_info, intensity_range
+        )
+    if choice == "discard":
+        obj_mgr.results_buffer.clear()
+        return True
+    if choice is None:
+        print("", "Warning: save dialog unavailable; the switch was cancelled.", sep="\n", flush=True)
+    return False
 
 
 def run_initial_model_pass(interact_model, sample_frame, imgenc_config_dict):
@@ -231,20 +344,32 @@ def run_initial_model_pass(interact_model, sample_frame, imgenc_config_dict):
     return encoded_img, init_mask_preds, iou_preds, init_mask_idx, preencode_hw, token_hw
 
 
-def print_model_config(model_name, device_config_dict, preencode_hw, token_hw):
+def print_model_config(model_name, device_config_dict, preencode_hw, token_hw, requested_side=None):
     model_device = device_config_dict["device"]
     model_dtype = str(device_config_dict["dtype"]).split(".")[-1]
     image_hw_str = f"{preencode_hw[0]} x {preencode_hw[1]}"
     token_hw_str = f"{token_hw[0]} x {token_hw[1]}"
-    print(
+    lines = [
         "",
         f"Config ({model_name}):",
         f"  Device: {model_device} ({model_dtype})",
         f"  Resolution HW: {image_hw_str}",
         f"  Tokens HW: {token_hw_str}",
-        sep="\n",
-        flush=True,
-    )
+    ]
+    if requested_side is not None:
+        lines.append(f"  Requested side: {int(requested_side)}")
+    print(*lines, sep="\n", flush=True)
+
+
+def apply_encode_side(config: dict, family: str, explicit_side: int | None) -> int:
+    """Write the encode side into the shared image-encoder config and warn when needed."""
+
+    side = resolve_encode_side(explicit_side)
+    config["max_side_length"] = side
+    warning = encode_side_warning(family, side)
+    if warning:
+        print(f"  Warning: {warning}", flush=True)
+    return side
 
 
 def format_device_label(device_config_dict: dict) -> str:
@@ -261,11 +386,13 @@ def clear_hover_preview_mask(obj_mgr, objidx: int, track_idx_keeper) -> None:
         track_idx_keeper.clear()
 
 
-def apply_zero_tracking_mask(obj_mgr, objidx: int) -> None:
+def apply_zero_tracking_mask(obj_mgr, objidx: int, frame_idx: int | None = None) -> None:
     """Zero the display mask for an object without running video masking."""
     maskresult = obj_mgr.maskresults_list[objidx]
     zero_preds = maskresult.preds * 0.0
-    obj_mgr.maskresults_list[objidx].update(zero_preds, maskresult.idx, maskresult.objscore)
+    obj_mgr.maskresults_list[objidx].update(
+        zero_preds, maskresult.idx, maskresult.objscore, frame_idx=frame_idx, source="track"
+    )
 
 
 def playback_direction(reverse_video: bool) -> int:
@@ -284,6 +411,10 @@ def track_single_object_at_frame(
     is_trackhistory_enabled: bool,
     lost_objects_out: list | None = None,
     frame_direction: int = 1,
+    mask_select_mode: str = "legacy",
+    model_family: str = "v2",
+    lost_patience: int = 1,
+    max_prompt_attn: int | None = None,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, float | None]:
     """Run video masking for one object slot, or zero its mask if tracking is stopped at this frame."""
     memory = obj_mgr.memory_list[objidx]
@@ -292,29 +423,36 @@ def track_single_object_at_frame(
 
     memory.reconcile_tracking_stop_frame(frame_idx)
     if not memory.should_run_video_masking(frame_idx, keep_tracking_after_loss):
-        apply_zero_tracking_mask(obj_mgr, objidx)
+        apply_zero_tracking_mask(obj_mgr, objidx, frame_idx)
         return None, None, None
 
     # Drop frame memory before inference when this frame does not continue the chain.
     chain = memory.begin_frame(frame_idx, frame_direction)
+    memory_kwargs = memory.to_dict()
+    if max_prompt_attn is not None and model_family in ("v3", "v3p1"):
+        memory_kwargs["prompt_memory_encodings"] = memory.prompt_encodings_for_frame(frame_idx, max_prompt_attn)
     mask_preds, iou_preds, obj_ptr, obj_score = track_model.step_video_masking(
-        encoded_img, **memory.to_dict(), return_best_only=False
+        encoded_img, **memory_kwargs, return_best_only=False
     )
     obj_score_float = float(obj_score)
-    tracked_mask_idx = get_best_mask_index(iou_preds)
+    tracked_mask_idx = select_mask_index(iou_preds, model_family, "track", mask_select_mode)
 
     encode_memory = False
     if obj_score_float < object_score_threshold:
         mask_preds = mask_preds * 0.0
         if not keep_tracking_after_loss:
-            was_already_stopped = memory.tracking_stop_frame_idx is not None
-            memory.set_tracking_stop_frame(frame_idx)
-            if lost_objects_out is not None and not was_already_stopped:
+            if memory.note_score(frame_idx, True, lost_patience) and lost_objects_out is not None:
                 lost_objects_out.append(objidx)
-    elif is_trackhistory_enabled and chain != "same":
-        encode_memory = True
+        else:
+            memory.note_score(frame_idx, False, lost_patience)
+    else:
+        memory.note_score(frame_idx, False, lost_patience)
+        if is_trackhistory_enabled and chain != "same":
+            encode_memory = True
 
-    obj_mgr.maskresults_list[objidx].update(mask_preds, tracked_mask_idx, obj_score_float)
+    obj_mgr.maskresults_list[objidx].update(
+        mask_preds, tracked_mask_idx, obj_score_float, frame_idx=frame_idx, source="track"
+    )
     memory.note_playhead(frame_idx, frame_direction)
     if encode_memory:
         obj_mgr.pending_memory.append(
@@ -340,6 +478,10 @@ def run_multi_object_tracking(
     is_trackhistory_enabled,
     lost_objects_out: list | None = None,
     frame_direction: int = 1,
+    mask_select_mode: str = "legacy",
+    model_family: str = "v2",
+    lost_patience: int = 1,
+    max_prompt_attn: int | None = None,
 ) -> None:
     """Run video masking for every object that has stored prompts."""
     for objidx in obj_mgr.objiter:
@@ -354,6 +496,10 @@ def run_multi_object_tracking(
             is_trackhistory_enabled,
             lost_objects_out,
             frame_direction,
+            mask_select_mode,
+            model_family,
+            lost_patience,
+            max_prompt_attn,
         )
 
 
@@ -523,35 +669,6 @@ def clear_tracking_ui_state(
     obj_mgr.results_buffer.clear()
 
 
-@dataclass
-class TrackingResultsBuffer:
-    """Storage for combined per-frame label images (8-bit grayscale, object id = gray value)."""
-
-    frames_dict: dict[int, np.ndarray]
-
-    @classmethod
-    def create(cls):
-        return cls({})
-
-    def clear(self):
-        self.frames_dict.clear()
-        return self
-
-    def has_data(self) -> bool:
-        return len(self.frames_dict) > 0
-
-    def record_frame(self, frame_idx: int, label_img: np.ndarray):
-        self.frames_dict[int(frame_idx)] = label_img.copy()
-        return self
-
-    def erase_label(self, stable_id: int):
-        """Remove one object's gray value from frames already stored in memory."""
-        value = np.uint8(stable_id)
-        for label_img in self.frames_dict.values():
-            label_img[label_img == value] = 0
-        return self
-
-
 def get_video_base_name_for_save(video_path) -> str:
     if video_path is None:
         return "video"
@@ -586,6 +703,24 @@ def record_combined_tracking_frame(obj_mgr, uictrl, frame_idx: int, frame_hw):
         return
     label_img = build_combined_label_image(frame_hw, labeled_masks)
     obj_mgr.results_buffer.record_frame(frame_idx, label_img)
+
+
+def maybe_record_current_frame(obj_mgr, uictrl, frame_idx: int, frame_hw, enabled: bool) -> None:
+    """Record a frame once every prompted object has a tracker mask for that frame."""
+
+    if not enabled:
+        return
+    prompted = [objidx for objidx in obj_mgr.objiter if obj_mgr.memory_list[objidx].check_has_prompts()]
+    if len(prompted) == 0:
+        return
+    results = [obj_mgr.maskresults_list[objidx] for objidx in prompted]
+    if any(result.source != "track" or result.frame_idx != int(frame_idx) for result in results):
+        return
+    signature = (int(frame_idx), tuple(result.version for result in results))
+    if signature == obj_mgr.last_record_signature:
+        return
+    record_combined_tracking_frame(obj_mgr, uictrl, frame_idx, frame_hw)
+    obj_mgr.last_record_signature = signature
 
 
 class PromptUndoManager:
@@ -642,7 +777,9 @@ class PromptUndoManager:
         return True
 
 
-def prompt_and_save_tracking_results(obj_mgr, video_path, window, history=None, toast=None, video_fps=30.0) -> bool:
+def prompt_and_save_tracking_results(
+    obj_mgr, video_path, window, history=None, toast=None, video_fps=30.0, source_info=None, intensity_range="auto"
+) -> bool:
     if not obj_mgr.results_buffer.has_data():
         return False
 
@@ -662,7 +799,11 @@ def prompt_and_save_tracking_results(obj_mgr, video_path, window, history=None, 
     window.refocus()
     if export_params is None:
         return False
-    fps_value, pixel_size_um = export_params
+    if len(export_params) == 2:
+        fps_value, pixel_size_um = export_params
+        max_frame_gap = 1
+    else:
+        fps_value, pixel_size_um, max_frame_gap = export_params
 
     video_base_name = get_video_base_name_for_save(video_path)
     results_folder_name = make_mt_results_folder_name(video_base_name)
@@ -692,6 +833,7 @@ def prompt_and_save_tracking_results(obj_mgr, video_path, window, history=None, 
                 save_folder,
                 progress_cb=report_progress,
                 fps=fps_value,
+                source_info=source_info,
             )
         except IOError as err:
             show_message_dialog("Save Failed", f"Could not save tracking results:\n\n{err}", kind="error")
@@ -699,14 +841,19 @@ def prompt_and_save_tracking_results(obj_mgr, video_path, window, history=None, 
 
         # Export metrics (velocity/displacement/orientation/MSD) + overlay video alongside the label sequence
         try:
-            export_tracking_analysis(
+            summary = export_tracking_analysis(
                 save_folder,
                 obj_mgr.results_buffer.frames_dict,
                 video_path,
                 fps_value,
                 pixel_size_um,
                 progress_cb=report_progress,
+                max_frame_gap=max_frame_gap,
+                intensity_range=intensity_range,
             )
+            missed = int(summary.get("overlay_missed_frames") or 0)
+            if missed and toast is not None:
+                toast.notify(f"Overlay missed {missed} source frame(s)", level="warning", duration_sec=4.0)
         except Exception as err:
             obj_mgr.pending_analysis = {
                 "folder": save_folder,
@@ -784,26 +931,44 @@ def retry_pending_metrics(obj_mgr, toast=None) -> bool:
     return True
 
 
-def handle_close_request(obj_mgr, video_path, window, history=None, toast=None, video_fps=30.0) -> bool:
+def handle_close_request(
+    obj_mgr, video_path, window, history=None, toast=None, video_fps=30.0, source_info=None, intensity_range="auto"
+) -> bool:
     """Return True when the application should exit, False to keep running."""
 
-    if not obj_mgr.results_buffer.has_data():
-        return True
-
-    should_save = ask_save_unsaved_results()
-    window.refocus()
-    if should_save is None:
-        print("", "Warning: save dialog unavailable, discarding unsaved results.", sep="\n", flush=True)
-        obj_mgr.results_buffer.clear()
-        return True
-
-    if should_save:
-        if not prompt_and_save_tracking_results(obj_mgr, video_path, window, history, toast, video_fps):
+    if obj_mgr.results_buffer.has_data():
+        choice = ask_save_discard_cancel(
+            "There are unsaved tracking results in memory.\n\nSave them before closing?"
+        )
+        window.refocus()
+        if choice == "cancel":
             return False
-    else:
-        obj_mgr.results_buffer.clear()
+        if choice is None:
+            print("", "Warning: save dialog unavailable. Writing an automatic copy.", sep="\n", flush=True)
+            emergency_save_results(obj_mgr, video_path, history, video_fps, source_info)
+            return True
+        if choice == "save":
+            if not prompt_and_save_tracking_results(
+                obj_mgr, video_path, window, history, toast, video_fps, source_info, intensity_range
+            ):
+                return False
+        else:
+            obj_mgr.results_buffer.clear()
+        return True
 
-    return True
+    memories = getattr(obj_mgr, "memory_list", [])
+    has_prompts = any(memory.check_has_prompts() for memory in memories)
+    if not has_prompts:
+        return True
+    discard_prompts = ask_yes_no(
+        "Quit",
+        "Stored prompts have not been saved as a session.\n\nQuit and discard them?",
+    )
+    window.refocus()
+    if discard_prompts is None:
+        print("", "Warning: dialog unavailable. Staying open so prompts are not discarded.", sep="\n", flush=True)
+        return False
+    return bool(discard_prompts)
 
 
 class ObjectSlotManager:
@@ -851,6 +1016,7 @@ class ObjectSlotManager:
         self.exclusive_hw: tuple[int, int] | None = None
         self.pending_memory: list[dict] = []
         self.pending_analysis: dict | None = None
+        self.last_record_signature = None
         self.buffer_btns_list: list[ToggleButton] = []
         self.object_grid = None
         self._object_grid_viewport_h = 0
@@ -1023,7 +1189,7 @@ class ObjectSlotManager:
         self.memory_list.clear()
         self.stable_ids.clear()
         self.results_buffer.clear()
-        self.pending_analysis = None
+        self.last_record_signature = None
         self._clear_mask_cache()
         self._append_object_data()
         self._rebuild_ui(0)
@@ -1044,9 +1210,7 @@ def main():
     default_device = get_default_device_string()
     default_video_path = None
     default_model_path = None
-    default_prompts_path = None
     default_display_size = 900
-    default_base_size = 1344
     default_max_memory_history = 6
     default_object_score_threshold = 0.0
     default_encode_cache_size = 64
@@ -1092,20 +1256,23 @@ def main():
         "--use_aspect_ratio",
         default=False,
         action="store_true",
-        help="Process the video at it's original aspect ratio. Omit to reuse the saved square/aspect choice.",
+        help="Process the video at its original aspect ratio. Omit to reuse the saved square/aspect choice.",
     )
     parser.add_argument(
         "--square",
         default=False,
         action="store_true",
-        help="Force square image padding and override the saved aspect setting",
+        help="Stretch each frame to a square and override the saved aspect setting",
     )
     parser.add_argument(
         "-b",
         "--base_size_px",
-        default=default_base_size,
+        default=DEFAULT_ENCODE_SIDE,
         type=int,
-        help="Set image processing size (will use model default if not set)",
+        help=(
+            f"Image encoder longest side (default: {DEFAULT_ENCODE_SIDE}). "
+            "SAM 2 native is 1024; SAM 3 / 3.1 native is 1008."
+        ),
     )
     parser.add_argument(
         "--max_memories",
@@ -1149,6 +1316,35 @@ def main():
         ),
     )
     parser.add_argument(
+        "--mask_select",
+        default="legacy",
+        choices=("legacy", "official"),
+        help="legacy keeps argmax over every mask. official uses SAM's tracking mask rule.",
+    )
+    parser.add_argument(
+        "--lost_patience",
+        default=1,
+        type=int,
+        help="Consecutive low-score frames before a target is lost (1 keeps the historical behavior).",
+    )
+    parser.add_argument(
+        "--max_prompt_attn",
+        default=None,
+        type=int,
+        help="For SAM 3 and 3.1, condition on the first prompt plus the closest others, up to this count.",
+    )
+    parser.add_argument(
+        "--intensity_range",
+        default="auto",
+        help="16-bit stills: auto (percentile), full (0-65535), or low,high.",
+    )
+    parser.add_argument(
+        "--encode_cache_mb",
+        default=2048,
+        type=int,
+        help="Extra cap on the CPU encode cache, in megabytes (0 disables the byte cap).",
+    )
+    parser.add_argument(
         "--reverse_buffer_size",
         default=default_reverse_buffer_size,
         type=int,
@@ -1167,13 +1363,22 @@ def main():
     device_str = args.device
     use_float32 = args.use_float32
     use_square_sizing = not args.use_aspect_ratio
-    imgenc_base_size = args.base_size_px
+    active_base_size = resolve_encode_side(args.base_size_px)
+    imgenc_base_size = active_base_size
     max_memory_history = args.max_memories
     keep_tracking_after_loss = args.keep_bad_objscores
     clear_history_on_new_prompts = not args.keep_history_on_new_prompts
     object_score_threshold = args.objscore_threshold
     encode_cache_size = max(0, args.encode_cache_size)
     reverse_buffer_size = max(0, args.reverse_buffer_size)
+    mask_select_mode = args.mask_select
+    lost_patience = max(1, args.lost_patience)
+    max_prompt_attn = args.max_prompt_attn
+    encode_cache_mb = max(0, args.encode_cache_mb)
+    try:
+        intensity_range = parse_intensity_range(args.intensity_range)
+    except ValueError as err:
+        parser.error(str(err))
 
 
     def print_startup_banner() -> None:
@@ -1191,10 +1396,14 @@ def main():
     compute_device = device_config_dict["device"]
 
     # Cache for frame image-encodings (stored on CPU to conserve VRAM)
-    encode_cache = EncodedImageCache(max_items=encode_cache_size, store_device="cpu")
+    encode_cache = EncodedImageCache(
+        max_items=encode_cache_size,
+        store_device="cpu",
+        max_bytes=None if encode_cache_mb == 0 else encode_cache_mb * 1024 * 1024,
+    )
 
-    # Create history to re-use selected inputs
-    history = HistoryKeeper()
+    # History lives beside this file, not in whatever directory the app was launched from.
+    history = HistoryKeeper(__file__)
     _, history_modelpath = history.read("model_path")
 
     # Restore persisted session settings only for options omitted on the command line.
@@ -1227,9 +1436,10 @@ def main():
         enable_history=bool(history_enabled_default),
     )
 
-    # Resolve model path without terminal prompts; video is selected from the GUI unless -i is used
+    # Resolve model candidates without terminal prompts; video is selected from the GUI unless -i is used.
+    # An explicit -m that matches nothing is an error. A history path is only remembered after it loads.
     try:
-        model_path = resolve_default_model_path(__file__, arg_model_path, history_modelpath)
+        model_candidates = resolve_model_candidates(__file__, arg_model_path, history_modelpath)
     except FileNotFoundError as err:
         print("", str(err), sep="\n", flush=True)
         sys.exit(1)
@@ -1237,13 +1447,16 @@ def main():
     if arg_video_path and osp.exists(clean_path_str(arg_video_path)):
         video_path = clean_path_str(arg_video_path)
         has_video_source = True
+    elif arg_video_path:
+        print("", f"Warning: input not found, starting without it: {arg_video_path}", sep="\n", flush=True)
+        video_path = None
+        has_video_source = False
     else:
         video_path = None
         has_video_source = False
 
-    history.store(model_path=model_path)
     if has_video_source:
-        history.store(video_path=video_path, model_path=model_path)
+        history.store(video_path=video_path)
 
 
     # ---------------------------------------------------------------------------------------------------------------------
@@ -1256,17 +1469,46 @@ def main():
     # ---------------------------------------------------------------------------------------------------------------------
     # %% Load model & optional video source
 
-    model_name = osp.basename(model_path)
     video_name = osp.basename(video_path) if has_video_source else NO_VIDEO_LABEL
     placeholder_frame = create_placeholder_frame()
 
     print_startup_banner()
-    sam_core, interact_model, track_model = load_sam_models(model_path, device_config_dict)
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        print(
+            "",
+            "Warning: tkinter is required for dialogs, saving, and the user guide.",
+            "  Install it with your Python distribution before recording results.",
+            sep="\n",
+            flush=True,
+        )
+    sam_core = interact_model = track_model = None
+    model_path = None
+    for candidate in model_candidates:
+        try:
+            sam_core, interact_model, track_model = load_sam_models(candidate, device_config_dict)
+            model_path = candidate
+            break
+        except Exception as err:
+            print("", f"Could not load model weights: {candidate}", f"  {err}", sep="\n", flush=True)
+            sam_core = interact_model = track_model = None
+            release_sam_runtime()
+            if arg_model_path:
+                sys.exit(1)
+    if model_path is None:
+        print("", "No SAM model weights could be loaded.", sep="\n", flush=True)
+        sys.exit(1)
+    history.store(model_path=model_path)
+    model_name = osp.basename(model_path)
+    model_family = model_family_name(sam_core)
+    print(f"  Model family: {model_family}", flush=True)
+    apply_encode_side(imgenc_config_dict, model_family, active_base_size)
 
     vreader = None
     video_fps = 30.0
     if has_video_source:
-        vreader = open_frame_source(video_path).release()
+        vreader = open_frame_source(video_path, intensity_range=intensity_range).release()
         vreader.set_frame_buffer_size(reverse_buffer_size)
         video_fps = vreader.get_fps()
         sample_frame = vreader.get_sample_frame()
@@ -1276,8 +1518,10 @@ def main():
     encoded_img, init_mask_preds, iou_preds, init_mask_idx, preencode_hw, token_hw = run_initial_model_pass(
         interact_model, sample_frame, imgenc_config_dict
     )
-    prediction_hw = init_mask_preds.shape[2:]
-    print_model_config(model_name, device_config_dict, preencode_hw, token_hw)
+    encoded_img = strip_detector_branch(encoded_img, model_family)
+    print_model_config(
+        model_name, device_config_dict, preencode_hw, token_hw, imgenc_config_dict["max_side_length"]
+    )
 
 
     # ---------------------------------------------------------------------------------------------------------------------
@@ -1354,6 +1598,9 @@ def main():
     )
     force_same_min_width(model_btn, video_btn)
     header_bar = HStack(model_btn, video_btn).set_debug_name("HeaderResourceBar")
+    save_session_btn = ImmediateButton("Save Session", button_height=30, text_scale=0.45, color=(95, 110, 140))
+    load_session_btn = ImmediateButton("Load Session", button_height=30, text_scale=0.45, color=(95, 110, 140))
+    force_same_min_width(save_session_btn, load_session_btn)
 
 
     def build_disp_layout(save_sidebar):
@@ -1363,6 +1610,7 @@ def main():
             playback_slider if has_video_source else None,
             HStack(num_prompts_text, track_btn, num_history_text),
             HStack(store_prompt_btn, clear_prompts_btn, reversal_btn, enable_history_btn, clear_history_btn),
+            HStack(save_session_btn, load_session_btn),
             HStack(vram_text, device_text, shortcuts_btn),
         ).set_debug_name("DisplayLayout")
 
@@ -1402,17 +1650,22 @@ def main():
     user_guide = UserGuideWindow(__app_name__, __version__, __author__, __author_email__, initial_lang="zh")
     user_guide.attach_h_toggle(window)
 
-    # Change tools on Tab / Shift+Tab; change objects on up/down arrow keys
+    # Change tools on Tab / Shift+Tab; change objects on up/down arrow keys.
+    # The pause callback reads the current reader, so it stays valid after a video switch.
     uictrl.attach_arrowkey_callbacks(window)
-    if has_video_source:
-        window.attach_keypress_callback(" ", vreader.toggle_pause)
+
+    def _toggle_pause():
+        if vreader is not None:
+            vreader.toggle_pause()
+
+    window.attach_keypress_callback(" ", _toggle_pause)
     window.attach_arrow_keypress_callback("up", obj_mgr.previous_object)
     window.attach_arrow_keypress_callback("down", obj_mgr.next_object)
     window.attach_keypress_callback("w", obj_mgr.previous_object)
     window.attach_keypress_callback("s", obj_mgr.next_object)
     window.attach_keypress_callback("+", add_object_btn.click)
     window.attach_keypress_callback("=", add_object_btn.click)
-    window.attach_keypress_callback("-", remove_object_btn.click)
+    window.attach_keypress_callback("_", remove_object_btn.click)
 
 
     def _store_prompt_if_paused():
@@ -1460,6 +1713,93 @@ def main():
     _, _, prev_selected_tool = ui_elems.tools_constraint.read()
     was_playback_adjusting = False
     hover_preview_suppressed = False
+    clean_exit = False
+    consecutive_errors = 0
+
+    def _restore_prompt_session(session: dict) -> None:
+        """Rebuild object slots from raw prompts and encode them with the saved settings."""
+
+        nonlocal model_path, model_name, model_family
+        nonlocal sam_core, interact_model, track_model
+        nonlocal active_base_size, encoded_img, init_mask_preds, init_mask_idx
+
+        objects = session.get("objects") or []
+        if len(objects) == 0:
+            raise ValueError("Session file has no prompts.")
+        if len(objects) > obj_mgr.MAX_OBJECTS:
+            raise ValueError(f"Session has {len(objects)} objects; the limit is {obj_mgr.MAX_OBJECTS}.")
+
+        runtime_changed = False
+        saved_model = clean_path_str(session.get("model_path"))
+        if saved_model:
+            if not osp.isfile(saved_model):
+                raise FileNotFoundError(f"Session model weights were not found: {saved_model}")
+            current_model = osp.normcase(osp.abspath(str(model_path)))
+            if osp.normcase(osp.abspath(saved_model)) != current_model:
+                new_core, new_interact, new_track = load_sam_models(saved_model, device_config_dict)
+                encode_cache.clear()
+                sam_core = interact_model = track_model = None
+                release_sam_runtime()
+                sam_core, interact_model, track_model = new_core, new_interact, new_track
+                model_path = saved_model
+                model_name = osp.basename(model_path)
+                model_family = model_family_name(sam_core)
+                history.store(model_path=model_path)
+                model_btn.set_label(format_resource_button_label("Model", model_name))
+                runtime_changed = True
+
+        saved_side = session.get("encode_side")
+        if saved_side is not None and int(saved_side) != int(active_base_size):
+            active_base_size = int(saved_side)
+            runtime_changed = True
+        saved_square = session.get("use_square_sizing")
+        if saved_square is not None and bool(saved_square) != bool(imgenc_config_dict["use_square_sizing"]):
+            imgenc_config_dict["use_square_sizing"] = bool(saved_square)
+            runtime_changed = True
+        if runtime_changed:
+            apply_encode_side(imgenc_config_dict, model_family, active_base_size)
+            encode_cache.clear()
+            sample = vreader.get_sample_frame() if vreader is not None else placeholder_frame.copy()
+            encoded_img, init_mask_preds, _iou_preds, init_mask_idx, preencode_hw, token_hw = run_initial_model_pass(
+                interact_model, sample, imgenc_config_dict
+            )
+            encoded_img = strip_detector_branch(encoded_img, model_family)
+            print_model_config(
+                model_name,
+                device_config_dict,
+                preencode_hw,
+                token_hw,
+                imgenc_config_dict["max_side_length"],
+            )
+
+        vreader.pause(True)
+        obj_mgr.reset_to_single_object(init_mask_preds, init_mask_idx, clear_prompts=True)
+        while len(obj_mgr.maskresults_list) < len(objects):
+            if not obj_mgr.add_object(select_new=False, clear_prompts=False):
+                raise ValueError("Could not create enough object slots for the session.")
+        for objidx, obj in enumerate(objects):
+            for prompt in obj.get("prompts") or []:
+                frame_index = int(prompt["frame_index"])
+                vreader.set_playback_position(frame_index)
+                frame = vreader.get_current_frame()
+                encoded = strip_detector_branch(
+                    interact_model.encode_image(frame, **imgenc_config_dict), model_family
+                )
+                boxes = prompt.get("boxes") or []
+                fg_points = prompt.get("fg_points") or []
+                bg_points = prompt.get("bg_points") or []
+                _best_mask, memory_encoding = track_model.encode_prompt_memory(
+                    encoded, boxes, fg_points, bg_points, mask_index=None
+                )
+                obj_mgr.memory_list[objidx].store_prompt_result(
+                    memory_encoding,
+                    frame_index,
+                    {"boxes": boxes, "fg_points": fg_points, "bg_points": bg_points},
+                )
+                obj_mgr.memory_list[objidx].clear_tracking_stop_frame()
+        track_idx_keeper.clear()
+        obj_mgr.last_record_signature = None
+
     try:
 
         while True:
@@ -1481,16 +1821,40 @@ def main():
                     picked_model_path = pick_model_file(__file__, model_path)
                     window.refocus()
                     if picked_model_path and picked_model_path != model_path:
-                        unload_sam_model(sam_core)
+                        if not confirm_before_discarding_results(
+                            "switch models",
+                            obj_mgr,
+                            video_path,
+                            window,
+                            history,
+                            toast,
+                            video_fps,
+                            getattr(vreader, "source_info", None) if vreader is not None else None,
+                            intensity_range,
+                        ):
+                            continue
+                        try:
+                            new_core, new_interact, new_track = load_sam_models(picked_model_path, device_config_dict)
+                        except Exception as err:
+                            show_message_dialog(
+                                "Model Load Failed",
+                                f"The current model is still loaded.\n\n{err}",
+                                kind="error",
+                            )
+                            window.refocus()
+                            continue
                         encode_cache.clear()
+                        encoded_img = None
+                        sam_core = interact_model = track_model = None
+                        release_sam_runtime()
+                        sam_core, interact_model, track_model = new_core, new_interact, new_track
                         model_path = picked_model_path
                         model_name = osp.basename(model_path)
+                        model_family = model_family_name(sam_core)
+                        apply_encode_side(imgenc_config_dict, model_family, active_base_size)
+                        history.store(model_path=model_path)
                         if has_video_source:
-                            history.store(video_path=video_path, model_path=model_path)
-                        else:
-                            history.store(model_path=model_path)
-
-                        sam_core, interact_model, track_model = load_sam_models(model_path, device_config_dict)
+                            history.store(video_path=video_path)
                         model_btn.set_label(format_resource_button_label("Model", model_name))
                         toast.notify(f"Model loaded: {model_name}", level="success")
 
@@ -1503,7 +1867,14 @@ def main():
                         encoded_img, init_mask_preds, iou_preds, init_mask_idx, preencode_hw, token_hw = run_initial_model_pass(
                             interact_model, sample_frame, imgenc_config_dict
                         )
-                        print_model_config(model_name, device_config_dict, preencode_hw, token_hw)
+                        encoded_img = strip_detector_branch(encoded_img, model_family)
+                        print_model_config(
+                            model_name,
+                            device_config_dict,
+                            preencode_hw,
+                            token_hw,
+                            imgenc_config_dict["max_side_length"],
+                        )
 
                         clear_tracking_ui_state(
                             uictrl,
@@ -1531,18 +1902,41 @@ def main():
                     picked_video_path = pick_frame_source(video_path)
                     window.refocus()
                     if picked_video_path and (picked_video_path != video_path):
+                        if not confirm_before_discarding_results(
+                            "open another video",
+                            obj_mgr,
+                            video_path,
+                            window,
+                            history,
+                            toast,
+                            video_fps,
+                            getattr(vreader, "source_info", None) if vreader is not None else None,
+                            intensity_range,
+                        ):
+                            continue
+                        try:
+                            new_reader = open_frame_source(picked_video_path, intensity_range=intensity_range).release()
+                            new_reader.set_frame_buffer_size(reverse_buffer_size)
+                            new_sample = new_reader.get_sample_frame()
+                        except Exception as err:
+                            show_message_dialog(
+                                "Video Load Failed",
+                                f"The current video is still loaded.\n\n{err}",
+                                kind="error",
+                            )
+                            window.refocus()
+                            continue
                         if vreader is not None:
                             vreader.release()
                         encode_cache.clear()
+                        encoded_img = None
 
+                        vreader = new_reader
                         video_path = picked_video_path
                         video_name = osp.basename(video_path)
                         history.store(video_path=video_path, model_path=model_path)
-
-                        vreader = open_frame_source(video_path).release()
-                        vreader.set_frame_buffer_size(reverse_buffer_size)
                         video_fps = vreader.get_fps()
-                        sample_frame = vreader.get_sample_frame()
+                        sample_frame = new_sample
                         first_video_load = not has_video_source
                         has_video_source = True
 
@@ -1556,14 +1950,20 @@ def main():
                         toast.notify(f"Video loaded: {video_name}", level="success")
 
                         if first_video_load:
-                            window.attach_keypress_callback(" ", vreader.toggle_pause)
                             obj_mgr._rebuild_ui(obj_mgr.get_select_idx())
 
                         ui_elems.image.set_image(sample_frame)
                         encoded_img, init_mask_preds, iou_preds, init_mask_idx, preencode_hw, token_hw = run_initial_model_pass(
                             interact_model, sample_frame, imgenc_config_dict
                         )
-                        print_model_config(model_name, device_config_dict, preencode_hw, token_hw)
+                        encoded_img = strip_detector_branch(encoded_img, model_family)
+                        print_model_config(
+                            model_name,
+                            device_config_dict,
+                            preencode_hw,
+                            token_hw,
+                            imgenc_config_dict["max_side_length"],
+                        )
 
                         clear_tracking_ui_state(
                             uictrl,
@@ -1662,6 +2062,18 @@ def main():
                                 obj_mgr.maskresults_list[objidx].clear()
 
                 if remove_object_btn.read():
+                    remove_idx = obj_mgr.get_select_idx()
+                    has_prompts = obj_mgr.memory_list[remove_idx].check_has_prompts()
+                    stable_id = obj_mgr.stable_ids[remove_idx]
+                    has_labels = obj_mgr.results_buffer.contains_label(stable_id)
+                    if has_prompts or has_labels:
+                        confirmed = ask_yes_no(
+                            "Remove Object",
+                            f"Remove Object {stable_id}? Its prompts and recorded labels will be deleted.",
+                        )
+                        window.refocus()
+                        if confirmed is not True:
+                            continue
                     if obj_mgr.remove_selected_object():
                         layout_image = obj_mgr.disp_layout.render(h=display_size_px, w=display_size_px)
                         obj_mgr.finalize_layout_callback_regions()
@@ -1716,7 +2128,9 @@ def main():
                     if cached_encoding is not None:
                         encoded_img = cached_encoding
                     else:
-                        encoded_img = interact_model.encode_image(frame, **imgenc_config_dict)
+                        encoded_img = strip_detector_branch(
+                            interact_model.encode_image(frame, **imgenc_config_dict), model_family
+                        )
                         encode_cache.store(frame_idx, encoded_img)
                     imgenc_idx_keeper.record(frame_idx)
 
@@ -1732,6 +2146,10 @@ def main():
                         is_trackhistory_enabled,
                         lost_objects,
                         frame_direction,
+                        mask_select_mode,
+                        model_family,
+                        lost_patience,
+                        max_prompt_attn,
                     )
                     notify_lost_objects(toast, obj_mgr, lost_objects)
                     track_idx_keeper.record(frame_idx)
@@ -1860,6 +2278,10 @@ def main():
                             is_trackhistory_enabled,
                             lost_objects,
                             frame_direction,
+                            mask_select_mode,
+                            model_family,
+                            lost_patience,
+                            max_prompt_attn,
                         )
                         notify_lost_objects(toast, obj_mgr, lost_objects)
                         track_idx_keeper.record(frame_idx)
@@ -1872,13 +2294,22 @@ def main():
                                 level="warning",
                             )
                         else:
+                            stored_mask_idx = obj_mgr.maskresults_list[buffer_select_idx].idx
                             _, init_mem = track_model.encode_prompt_memory(
                                 encoded_img,
                                 *prompts,
-                                mask_index=None,
+                                mask_index=stored_mask_idx,
                             )
                             selected_memory = obj_mgr.memory_list[buffer_select_idx]
-                            selected_memory.store_prompt_result(init_mem)
+                            selected_memory.store_prompt_result(
+                                init_mem,
+                                frame_idx,
+                                {
+                                    "boxes": prompts[0],
+                                    "fg_points": prompts[1],
+                                    "bg_points": prompts[2],
+                                },
+                            )
                             selected_memory.clear_tracking_stop_frame()
                             if clear_history_on_new_prompts:
                                 selected_memory.discard_frame_memory()
@@ -1893,9 +2324,40 @@ def main():
                             )
 
                     # Store user-interaction results for selected object while paused
-                    if paused_mask_preds is not None:
-                        paused_mask_idx = get_best_mask_index(iou_preds)
-                        obj_mgr.maskresults_list[buffer_select_idx].update(paused_mask_preds, paused_mask_idx, paused_obj_score)
+                    if paused_mask_preds is not None and not selected_has_track_prompts:
+                        num_points = len(prompts[1]) + len(prompts[2])
+                        paused_mask_idx = select_mask_index(
+                            iou_preds,
+                            model_family,
+                            "prompt",
+                            mask_select_mode,
+                            num_points,
+                            len(prompts[0]) > 0,
+                        )
+                        obj_mgr.maskresults_list[buffer_select_idx].update(
+                            paused_mask_preds,
+                            paused_mask_idx,
+                            paused_obj_score,
+                            frame_idx=frame_idx,
+                            source="preview",
+                        )
+                    elif paused_mask_preds is not None and interactive_user_prompts:
+                        num_points = len(prompts[1]) + len(prompts[2])
+                        paused_mask_idx = select_mask_index(
+                            iou_preds,
+                            model_family,
+                            "prompt",
+                            mask_select_mode,
+                            num_points,
+                            len(prompts[0]) > 0,
+                        )
+                        obj_mgr.maskresults_list[buffer_select_idx].update(
+                            paused_mask_preds,
+                            paused_mask_idx,
+                            paused_obj_score,
+                            frame_idx=frame_idx,
+                            source="preview",
+                        )
 
                 elif curr_state == STATES.TRACKING:
 
@@ -1913,15 +2375,18 @@ def main():
                             is_trackhistory_enabled,
                             lost_objects,
                             frame_direction,
+                            mask_select_mode,
+                            model_family,
+                            lost_patience,
+                            max_prompt_attn,
                         )
                         notify_lost_objects(toast, obj_mgr, lost_objects)
 
                 # Resolve overlaps before drawing or recording, then commit this frame's memory.
                 finalize_frame_masks(obj_mgr, uictrl, track_model, encoded_img, frame.shape[0:2])
-                if has_video_source and scrub_just_released:
-                    _, is_record_enabled = enable_record_btn.read()
-                    if is_record_enabled:
-                        record_combined_tracking_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2])
+                _, is_record_enabled = enable_record_btn.read()
+                if has_video_source:
+                    maybe_record_current_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2], is_record_enabled)
 
                 # Update the mask indicators
                 selected_mask_uint8, selected_mask_contours, unselected_contours = collect_mask_contours(
@@ -1942,8 +2407,18 @@ def main():
                 req_break, keypress = window.show(display_image, None if is_paused else 1)
                 user_guide.process_events(window)
                 if req_break:
-                    if not handle_close_request(obj_mgr, video_path, window, history, toast, video_fps):
+                    if not handle_close_request(
+                        obj_mgr,
+                        video_path,
+                        window,
+                        history,
+                        toast,
+                        video_fps,
+                        getattr(vreader, "source_info", None) if vreader is not None else None,
+                        intensity_range,
+                    ):
                         continue
+                    clean_exit = True
                     break
 
                 # Updates playback indicator & allows for adjusting playback
@@ -1980,7 +2455,9 @@ def main():
                         if cached_encoding is not None:
                             encoded_img = cached_encoding
                         else:
-                            encoded_img = interact_model.encode_image(frame, **imgenc_config_dict)
+                            encoded_img = strip_detector_branch(
+                                interact_model.encode_image(frame, **imgenc_config_dict), model_family
+                            )
                             encode_cache.store(frame_idx, encoded_img)
                         imgenc_idx_keeper.record(frame_idx)
 
@@ -1997,6 +2474,10 @@ def main():
                                 is_trackhistory_enabled,
                                 lost_objects,
                                 step_direction,
+                                mask_select_mode,
+                                model_family,
+                                lost_patience,
+                                max_prompt_attn,
                             )
                             notify_lost_objects(toast, obj_mgr, lost_objects)
                         else:
@@ -2020,8 +2501,7 @@ def main():
                             playback_slider.update(frame_idx)
 
                         _, is_record_enabled = enable_record_btn.read()
-                        if is_record_enabled:
-                            record_combined_tracking_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2])
+                        maybe_record_current_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2], is_record_enabled)
 
                         step_delta = 0
                         if not req_break and is_paused:
@@ -2031,21 +2511,35 @@ def main():
                                 step_delta = 1
 
                     if req_break:
-                        if not handle_close_request(obj_mgr, video_path, window, history, toast, video_fps):
+                        if not handle_close_request(
+                        obj_mgr,
+                        video_path,
+                        window,
+                        history,
+                        toast,
+                        video_fps,
+                        getattr(vreader, "source_info", None) if vreader is not None else None,
+                        intensity_range,
+                    ):
                             req_break = False
                             continue
+                        clean_exit = True
                         break
                     continue
-
-                # Handle recording of combined label images
-                _, is_record_enabled = enable_record_btn.read()
-                if has_video_source and is_record_enabled and curr_state == STATES.TRACKING:
-                    record_combined_tracking_frame(obj_mgr, uictrl, frame_idx, frame.shape[0:2])
 
                 # Save buffered results to disk
                 if has_video_source and buffer_save_btn.read():
                     if obj_mgr.results_buffer.has_data():
-                        prompt_and_save_tracking_results(obj_mgr, video_path, window, history, toast, video_fps)
+                        prompt_and_save_tracking_results(
+                            obj_mgr,
+                            video_path,
+                            window,
+                            history,
+                            toast,
+                            video_fps,
+                            getattr(vreader, "source_info", None),
+                            intensity_range,
+                        )
                     else:
                         toast.notify("No tracking results in memory to save", level="warning")
 
@@ -2056,16 +2550,116 @@ def main():
                 if buffer_clear_btn.read():
                     obj_mgr.results_buffer.clear()
                     obj_mgr.pending_analysis = None
+                    obj_mgr.last_record_signature = None
                     toast.notify("Results buffer cleared", level="info", duration_sec=1.5)
 
+                if save_session_btn.read():
+                    session = session_from_manager(
+                        obj_mgr,
+                        model_path=model_path,
+                        encode_side=imgenc_config_dict["max_side_length"],
+                        use_square_sizing=imgenc_config_dict["use_square_sizing"],
+                    )
+                    if len(session["objects"]) == 0:
+                        toast.notify("No stored prompts to save", level="warning")
+                    else:
+                        session_path = pick_save_path(
+                            "Save prompt session",
+                            [("Session JSON", "*.json")],
+                            get_default_save_parent_folder(video_path, history),
+                            "session.json",
+                        )
+                        window.refocus()
+                        if session_path:
+                            write_session(session_path, session)
+                            toast.notify("Session saved", level="success")
+
+                if load_session_btn.read():
+                    if vreader is None:
+                        toast.notify("Load a video before a session", level="warning")
+                    else:
+                        session_path = pick_file_path(
+                            "Load prompt session",
+                            [("Session JSON", "*.json"), ("All files", "*.*")],
+                            video_path,
+                        )
+                        window.refocus()
+                        if session_path:
+                            try:
+                                _restore_prompt_session(read_session(session_path))
+                                square_label = "square" if imgenc_config_dict["use_square_sizing"] else "aspect"
+                                toast.notify(
+                                    f"Session loaded ({model_name}, side {imgenc_config_dict['max_side_length']}, {square_label})",
+                                    level="success",
+                                )
+                            except Exception as err:
+                                show_message_dialog("Session Load Failed", str(err), kind="error")
+                                window.refocus()
+
+                consecutive_errors = 0
+
             except KeyboardInterrupt:
-                if handle_close_request(obj_mgr, video_path, window, history, toast, video_fps):
+                if handle_close_request(
+                        obj_mgr,
+                        video_path,
+                        window,
+                        history,
+                        toast,
+                        video_fps,
+                        getattr(vreader, "source_info", None) if vreader is not None else None,
+                        intensity_range,
+                    ):
                     print("", "Closed with Ctrl+C", sep="\n")
+                    clean_exit = True
                     break
+            except Exception:
+                consecutive_errors += 1
+                log_path = write_error_log(traceback.format_exc())
+                print("", f"Error (see {log_path})", sep="\n", flush=True)
+                if vreader is not None:
+                    vreader.pause()
+                if consecutive_errors >= 3:
+                    folder = None
+                    try:
+                        folder = emergency_save_results(
+                    obj_mgr,
+                    video_path,
+                    history,
+                    video_fps,
+                    getattr(vreader, "source_info", None) if vreader is not None else None,
+                )
+                    except Exception:
+                        traceback.print_exc()
+                    saved_note = f"\n\nLabels were auto-saved to:\n{folder}" if folder else ""
+                    show_message_dialog(
+                        "Fatal Error",
+                        f"Playback stopped after repeated errors.{saved_note}\n\nLog:\n{log_path}",
+                        kind="error",
+                    )
+                    clean_exit = True
+                    break
+                show_message_dialog(
+                    "Error",
+                    f"Playback was paused.\n\nDetails were written to:\n{log_path}",
+                    kind="error",
+                )
+                window.refocus()
     finally:
-        # Clean up resources
+        # A crash or a killed window should not throw away recorded labels.
+        if not clean_exit:
+            try:
+                emergency_save_results(
+                    obj_mgr,
+                    video_path,
+                    history,
+                    video_fps,
+                    getattr(vreader, "source_info", None) if vreader is not None else None,
+                )
+            except Exception:
+                traceback.print_exc()
         shortcuts_help.close()
         user_guide.close()
+        close_tk_root()
         cv2.destroyAllWindows()
         if vreader is not None:
             vreader.release()

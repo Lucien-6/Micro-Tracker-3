@@ -374,7 +374,7 @@ class PointSelectOverlay(BaseOverlay):
         if radius is not None:
             self._fg_radius = radius
         if thickness is not None:
-            self._fg_t = thickness
+            self._fg_thick = thickness
         if bg_color is not None:
             self._bg_color = bg_color if bg_color != -1 else None
         if bg_radius is not None:

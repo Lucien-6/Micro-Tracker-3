@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Local modification (Lucien, 2026-09-23): see src/VENDORED.md.
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -164,8 +165,8 @@ class RPEComplex(nn.Module):
 
         # For clarity
         h, w = tokens_hw
-        x_mult_scale = self._rope_h / h if self._use_hw_scaling else 1.0
-        y_mult_scale = self._rope_w / w if self._use_hw_scaling else 1.0
+        x_mult_scale = self._rope_w / w if self._use_hw_scaling else 1.0
+        y_mult_scale = self._rope_h / h if self._use_hw_scaling else 1.0
         device, dtype = self.base_angles.device, self.base_angles.dtype
 
         # Determine xy token indexing, in 1D, to use as angle multipliers
@@ -314,8 +315,8 @@ class RPEReal(nn.Module):
 
         # For clarity
         h, w = tokens_hw
-        x_mult_scale = self._rope_h / h if self._use_hw_scaling else 1.0
-        y_mult_scale = self._rope_w / w if self._use_hw_scaling else 1.0
+        x_mult_scale = self._rope_w / w if self._use_hw_scaling else 1.0
+        y_mult_scale = self._rope_h / h if self._use_hw_scaling else 1.0
         device, dtype = self.base_angles.device, self.base_angles.dtype
 
         # Determine xy token indexing, in 1D, to use as angle multipliers
@@ -394,7 +395,7 @@ class SinusoidalPE2D(nn.Module):
 
         # Re-generate cached result if needed
         cache_h, cache_w = self.cached_posenc_bchw.shape[-2:]
-        if cache_h != height or cache_w != width in self.cache:
+        if cache_h != height or cache_w != width:
 
             # For convenience
             device, dtype = self.cached_posenc_bchw.device, self.cached_posenc_bchw.dtype

@@ -13,6 +13,8 @@ from datetime import datetime
 import cv2
 import numpy as np
 
+from .image_io import imread_unicode, imwrite_unicode
+
 # For type hints
 from numpy import ndarray
 
@@ -63,7 +65,11 @@ def label_tif_filename(frame_idx: int, width: int = 5) -> str:
 
 
 def save_tracking_label_tif_sequence(
-    frames_dict: dict[int, ndarray], save_folder: str, progress_cb=None, fps: float | None = None
+    frames_dict: dict[int, ndarray],
+    save_folder: str,
+    progress_cb=None,
+    fps: float | None = None,
+    source_info: dict | None = None,
 ) -> tuple[str, int]:
     """
     Save combined label frames as an 8-bit TIF image sequence.
@@ -89,7 +95,7 @@ def save_tracking_label_tif_sequence(
         label_img = frames_dict[frame_idx]
         if label_img.dtype != np.uint8:
             label_img = label_img.astype(np.uint8)
-        if not cv2.imwrite(save_path, label_img):
+        if not imwrite_unicode(save_path, label_img):
             raise IOError(f"Failed to write tracking result image: {save_path}")
         time_s = (frame_idx / fps) if fps and fps > 0 else 0.0
         manifest_rows.append({"filename": filename, "frame_index": frame_idx, "time_s": time_s})
@@ -102,6 +108,12 @@ def save_tracking_label_tif_sequence(
         writer = csv.DictWriter(handle, fieldnames=("filename", "frame_index", "time_s"))
         writer.writeheader()
         writer.writerows(manifest_rows)
+
+    if source_info:
+        import json
+
+        with open(osp.join(save_folder, "source_info.json"), "w", encoding="utf-8") as handle:
+            json.dump(source_info, handle, indent=2)
 
     return save_folder, num_saved
 
@@ -121,7 +133,7 @@ def load_saved_label_frames(save_folder: str) -> dict[int, ndarray]:
             for row in csv.DictReader(handle):
                 frame_idx = int(row["frame_index"])
                 image_path = osp.join(save_folder, row["filename"])
-                label_img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+                label_img = imread_unicode(image_path, cv2.IMREAD_UNCHANGED)
                 if label_img is None:
                     raise IOError(f"Failed to read label image: {image_path}")
                 frames[frame_idx] = label_img
@@ -132,7 +144,7 @@ def load_saved_label_frames(save_folder: str) -> dict[int, ndarray]:
         if ext.lower() != ".tif" or not stem.isdigit():
             continue
         image_path = osp.join(save_folder, name)
-        label_img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        label_img = imread_unicode(image_path, cv2.IMREAD_UNCHANGED)
         if label_img is None:
             raise IOError(f"Failed to read label image: {image_path}")
         frames[int(stem)] = label_img

@@ -115,13 +115,16 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "Overlapping pixels go to the higher object score. Equal scores keep the smaller id.",
                 "Recording + Save Results writes {video}_MT-Results_{timestamp}/ with TIFF names equal to the source frame index (00240.tif is frame 240), plus frame_index.csv.",
                 "If metrics fail after the labels are written, the in-memory frames stay. Retry Metrics writes the CSV files and overlay into that same folder.",
+                "Save Session stores the prompts, the model path, the encode side, and whether frames are stretched to a square. Load Session applies those settings, then re-encodes the prompts. Older session files keep the current model and encode settings.",
                 "Only recorded frames are saved. Lost objects contribute label 0 where their mask is zero.",
                 "On Save, an export dialog asks for frame rate (fps) and pixel size (um/pixel); a progress window shows live status.",
                 "Alongside the labels, the app writes analysis files:",
                 _bullets(
                     "tracking_metrics.csv — per-frame centroid, area, orientation (fitted-ellipse long axis vs +X), velocity, displacement",
+                    "Orientation is clockwise in image coordinates because y increases downward",
                     "tracking_msd.csv — time-averaged Mean Squared Displacement per object",
                     "tracking_overlay.mp4 — colored contour per object + fading ~20-frame trajectory (hidden once an object leaves view)",
+                    "Overlay colors are 16 values and then repeat by object id",
                 ),
             ),
         ),
@@ -159,7 +162,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                     "C — Clear on-screen prompts",
                     "Tab / Shift+Tab — Switch prompt tool (forward / back)",
                     "↑ / ↓ or W / S — Previous / next object",
-                    "+ / - — Add / remove object slot",
+                    "+ / Shift+- — Add object / remove object (asks when the slot has data)",
                     "Mouse wheel (over object grid, 33+ objects) — Scroll object list",
                     "[ / ] — Zoom display out / in",
                     "Middle-click — Select object under cursor (tracked masks)",
@@ -176,16 +179,21 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                     "-m, --model_path — SAM weights (model_weights/)",
                     "-d, --device — cuda | mps | cpu",
                     "-s, --display_size — UI size. Omit to reuse the saved size",
-                    "-b, --base_size_px — Encoder longest side (default 1344)",
+                    "-b, --base_size_px — Encoder longest side (default 1344). SAM 2 native is 1024; SAM 3 / 3.1 native is 1008",
                     "-ar, --use_aspect_ratio — Keep aspect ratio (overrides the saved choice)",
-                    "--square — Force square padding (overrides the saved choice)",
-                    "-f32, --use_float32 — Float32 (more VRAM)",
+                    "--square — Stretch each frame to a square (overrides the saved choice)",
+                    "-f32, --use_float32 — Float32 on GPU (more VRAM). CPU already uses float32",
                     "--max_memories — Frame history depth (default 6)",
                     "--objscore_threshold — Lost threshold. Omit to reuse the saved value",
                     "--keep_bad_objscores — Keep inferencing after loss",
                     "--keep_history_on_new_prompts — Keep frame history on new Store Prompt",
                     "--encode_cache_size — CPU encode cache size (0 disables, default 64)",
                     "--reverse_buffer_size — Reverse-playback frame buffer (0 disables, default 120)",
+                    "--mask_select — legacy (default) or official",
+                    "--lost_patience — Consecutive low scores before a target is lost (default 1)",
+                    "--max_prompt_attn — SAM 3 / 3.1 prompt memories used per frame",
+                    "--intensity_range — 16-bit stills: auto, full, or low,high",
+                    "--encode_cache_mb — CPU encode-cache megabyte cap (default 2048)",
                 ),
             ),
         ),
@@ -292,13 +300,16 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                 "重叠像素留给得分更高的对象；得分相同则保留较小编号。",
                 "录制并 Save Results 生成的 TIF 以视频帧号命名（00240.tif 即第 240 帧），并附 frame_index.csv。",
                 "若标签已保存但指标失败，内存中的帧会保留。Retry Metrics 把 CSV 和叠加视频写进同一文件夹。",
+                "Save Session 会保存提示、模型路径、编码边长，以及是否拉伸成正方形。Load Session 先套用这些设置，再重新编码。旧会话文件没有这些项时，沿用当前模型和编码设置。",
                 "仅保存已录制帧；丢失对象在掩膜为零的帧上对应标签 0。",
                 "保存时会弹出导出对话框，输入帧率（fps）与像素尺寸（um/pixel）；进度窗口实时显示状态。",
                 "除标签序列外，还会写出分析文件：",
                 _bullets(
                     "tracking_metrics.csv — 每帧质心、面积、取向角（拟合椭圆长轴与 +X 夹角）、速度、位移",
+                    "取向角在图像坐标中为顺时针，因为 y 向下增大",
                     "tracking_msd.csv — 每个对象的时间平均均方位移（MSD）",
                     "tracking_overlay.mp4 — 每个对象不同颜色轮廓 + 近 20 帧渐隐轨迹（对象出画后轨迹消失）",
+                    "叠加颜色共 16 种，之后按对象编号循环",
                 ),
             ),
         ),
@@ -336,7 +347,7 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                     "C — 清除屏幕提示",
                     "Tab / Shift+Tab — 切换提示工具（向前 / 向后）",
                     "↑ / ↓ 或 W / S — 上 / 下一个对象",
-                    "+ / - — 增加 / 删除对象槽位",
+                    "+ / Shift+- — 增加对象 / 删除对象（已有提示或标签时会确认）",
                     "鼠标滚轮（对象网格上，超过 32 个时）— 滚动对象列表",
                     "[ / ] — 缩小 / 放大显示",
                     "中键 — 点选掩膜下的对象",
@@ -353,16 +364,21 @@ GUIDE_CONTENT: dict[str, tuple[GuideSection, ...]] = {
                     "-m, --model_path — SAM 权重（model_weights/）",
                     "-d, --device — cuda | mps | cpu",
                     "-s, --display_size — 界面尺寸；省略则沿用已保存的值",
-                    "-b, --base_size_px — 编码长边（默认 1344）",
+                    "-b, --base_size_px — 编码长边（默认 1344）。SAM 2 原生为 1024，SAM 3 / 3.1 原生为 1008",
                     "-ar, --use_aspect_ratio — 保持宽高比（覆盖已保存的选择）",
-                    "--square — 强制方形填充（覆盖已保存的选择）",
-                    "-f32, --use_float32 — 使用 float32（占用更多显存）",
+                    "--square — 将每帧拉伸为正方形（覆盖已保存的选择）",
+                    "-f32, --use_float32 — GPU 上使用 float32（占用更多显存）。CPU 本身即为 float32",
                     "--max_memories — 帧历史深度（默认 6）",
                     "--objscore_threshold — 丢失判定阈值；省略则沿用已保存的值",
                     "--keep_bad_objscores — 丢失后继续推理",
                     "--keep_history_on_new_prompts — 新 Store 时保留帧历史",
                     "--encode_cache_size — CPU 编码缓存大小（0 关闭，默认 64）",
                     "--reverse_buffer_size — 倒放帧缓冲（0 关闭，默认 120）",
+                    "--mask_select — legacy（默认）或 official",
+                    "--lost_patience — 连续低分帧数达到该值才判为丢失（默认 1）",
+                    "--max_prompt_attn — SAM 3 / 3.1 每帧使用的提示记忆条数",
+                    "--intensity_range — 16 位静图：auto、full，或 low,high",
+                    "--encode_cache_mb — CPU 编码缓存的兆字节上限（默认 2048）",
                 ),
             ),
         ),
@@ -442,10 +458,9 @@ class UserGuideWindow:
         import tkinter as tk
         from tkinter import scrolledtext, ttk
 
-        if self._root is None:
-            self._root = tk.Tk()
-            self._root.withdraw()
+        from ..tk_host import get_tk_root
 
+        self._root = get_tk_root()
         if self._top is not None:
             return
 
@@ -599,18 +614,15 @@ class UserGuideWindow:
         return self
 
     def close(self):
+        """Hide the guide. The shared Tk root stays alive for the dialogs."""
+
         if self._top is not None:
             try:
                 self._top.destroy()
             except Exception:
                 pass
             self._top = None
-        if self._root is not None:
-            try:
-                self._root.destroy()
-            except Exception:
-                pass
-            self._root = None
+        self._text = None
         self._is_visible = False
         return self
 

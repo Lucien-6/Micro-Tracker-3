@@ -17,47 +17,67 @@ import os.path as osp
 
 def clean_path_str(path=None):
     """
-    Helper used to interpret user-given paths correctly
-    Import for Windows, since 'copy path' on file explorer includes quotations!
+    Helper used to interpret user-given paths correctly.
+    Important for Windows, since 'copy path' in File Explorer wraps the path in quotes.
+    Only a matching pair of quotes around the whole path is removed, so names
+    such as "Lucien's data" stay intact.
     """
 
-    path_str = "" if path is None else str(path)
-    return osp.expanduser(path_str).strip().replace('"', "").replace("'", "")
+    path_str = "" if path is None else str(path).strip()
+    if len(path_str) >= 2 and path_str[0] == path_str[-1] and path_str[0] in "\"'":
+        path_str = path_str[1:-1].strip()
+    return osp.expanduser(path_str)
 
 
 # .....................................................................................................................
 
 
-def resolve_default_model_path(file_dunder, model_path=None, history_path=None) -> str:
+def resolve_model_candidates(file_dunder, model_path=None, history_path=None) -> list[str]:
     """
-    Resolve a SAM model weights path without interactive terminal prompts.
-    Priority: explicit valid path -> history path -> single match substring -> sole folder file -> first sorted file.
+    Ordered SAM weight candidates, without interactive prompts.
+
+    An explicit -m value is used on its own: an existing file, or the unique
+    file in model_weights/ whose name contains that text. It is an error when
+    that value matches nothing, instead of silently falling back to history.
+
+    With no -m, the history path comes first and the other weight files follow
+    in name order, so a bad history entry can be skipped.
     """
 
     explicit_path = clean_path_str(model_path)
-    if explicit_path and osp.exists(explicit_path):
-        return explicit_path
-
-    history_path = clean_path_str(history_path) if history_path else ""
-    if history_path and osp.exists(history_path):
-        return history_path
-
     model_file_paths = get_model_weights_paths(file_dunder)
-    if explicit_path:
-        filtered_paths = [p for p in model_file_paths if explicit_path in osp.basename(p)]
-        if len(filtered_paths) == 1:
-            return filtered_paths[0]
+    names = ", ".join(osp.basename(path) for path in sorted(model_file_paths)) or "(none)"
 
-    if len(model_file_paths) == 0:
+    if explicit_path:
+        if osp.isfile(explicit_path):
+            return [explicit_path]
+        matched = [path for path in model_file_paths if explicit_path in osp.basename(path)]
+        if len(matched) == 1:
+            return matched
+        if len(matched) > 1:
+            matched_names = ", ".join(osp.basename(path) for path in sorted(matched))
+            raise FileNotFoundError(f"Model selector {explicit_path!r} matches more than one file: {matched_names}")
+        raise FileNotFoundError(f"No SAM weights match {explicit_path!r}. Available: {names}")
+
+    candidates = []
+    stored_path = clean_path_str(history_path) if history_path else ""
+    if stored_path and osp.isfile(stored_path):
+        candidates.append(stored_path)
+    for path in sorted(model_file_paths):
+        if path not in candidates:
+            candidates.append(path)
+    if len(candidates) == 0:
         raise FileNotFoundError(
             "No SAM model weights found. Place a .pt/.pth file in the model_weights folder "
             "or pass -m / --model_path, then restart."
         )
+    return candidates
 
-    if len(model_file_paths) == 1:
-        return model_file_paths[0]
 
-    return sorted(model_file_paths, reverse=True)[0]
+def resolve_default_model_path(file_dunder, model_path=None, history_path=None) -> str:
+    """First entry from resolve_model_candidates."""
+
+    return resolve_model_candidates(file_dunder, model_path, history_path)[0]
 
 
 # .....................................................................................................................
@@ -93,8 +113,9 @@ def pick_file_path(
     """
 
     try:
-        import tkinter as tk
         from tkinter import filedialog
+
+        from .tk_host import get_tk_root
     except ImportError:
         print("", "Warning: tkinter unavailable, cannot open file picker.", sep="\n", flush=True)
         return None
@@ -107,11 +128,10 @@ def pick_file_path(
         elif osp.isfile(initial_path):
             initialdir = osp.dirname(initial_path)
 
-    root = tk.Tk()
-    root.withdraw()
+    root = get_tk_root()
     root.attributes("-topmost", True)
-    selected_path = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=initialdir)
-    root.destroy()
+    selected_path = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=initialdir, parent=root)
+    root.attributes("-topmost", False)
 
     selected_path = clean_path_str(selected_path)
     if selected_path == "" or not osp.exists(selected_path):
@@ -121,6 +141,44 @@ def pick_file_path(
 
 
 # .....................................................................................................................
+
+
+def pick_save_path(
+    title: str,
+    filetypes: list[tuple[str, str]],
+    initial_path: str | None = None,
+    default_name: str = "",
+) -> str | None:
+    """Ask for a new file path. Returns None when the user cancels."""
+
+    try:
+        from tkinter import filedialog
+
+        from .tk_host import get_tk_root
+    except ImportError:
+        print("", "Warning: tkinter unavailable, cannot open save dialog.", sep="\n", flush=True)
+        return None
+
+    initialdir = None
+    if initial_path is not None:
+        initial_path = clean_path_str(initial_path)
+        if osp.isdir(initial_path):
+            initialdir = initial_path
+        elif osp.isfile(initial_path):
+            initialdir = osp.dirname(initial_path)
+    root = get_tk_root()
+    root.attributes("-topmost", True)
+    selected = filedialog.asksaveasfilename(
+        title=title,
+        filetypes=filetypes,
+        initialdir=initialdir,
+        initialfile=default_name,
+        defaultextension=".json",
+        parent=root,
+    )
+    root.attributes("-topmost", False)
+    selected = clean_path_str(selected)
+    return selected or None
 
 
 def pick_model_file(file_dunder, current_path: str | None = None) -> str | None:
@@ -159,8 +217,9 @@ def pick_image_folder(current_path: str | None = None) -> str | None:
     """Browse for a folder of still images, in filename order."""
 
     try:
-        import tkinter as tk
         from tkinter import filedialog
+
+        from .tk_host import get_tk_root
     except ImportError:
         print("", "Warning: tkinter unavailable, cannot open folder picker.", sep="\n", flush=True)
         return None
@@ -173,11 +232,10 @@ def pick_image_folder(current_path: str | None = None) -> str | None:
         elif osp.isfile(current_path):
             initialdir = osp.dirname(current_path)
 
-    root = tk.Tk()
-    root.withdraw()
+    root = get_tk_root()
     root.attributes("-topmost", True)
-    selected_path = filedialog.askdirectory(title="Select image sequence folder", initialdir=initialdir)
-    root.destroy()
+    selected_path = filedialog.askdirectory(title="Select image sequence folder", initialdir=initialdir, parent=root)
+    root.attributes("-topmost", False)
 
     selected_path = clean_path_str(selected_path)
     if selected_path == "" or not osp.isdir(selected_path):
@@ -194,28 +252,33 @@ def pick_frame_source(current_path: str | None = None) -> str | None:
 
     try:
         import tkinter as tk
+
+        from .tk_host import get_tk_root
     except ImportError:
         return pick_video_file(current_path)
 
     choice: dict[str, str] = {}
-    root = tk.Tk()
-    root.title("Open frames")
-    root.attributes("-topmost", True)
-    root.resizable(False, False)
-    tk.Label(root, text="Open a video, a TIFF stack, or a folder of still images.").grid(
+    root = get_tk_root()
+    dialog = tk.Toplevel(root)
+    dialog.title("Open frames")
+    dialog.attributes("-topmost", True)
+    dialog.resizable(False, False)
+    tk.Label(dialog, text="Open a video, a TIFF stack, or a folder of still images.").grid(
         row=0, column=0, columnspan=2, padx=12, pady=(12, 8)
     )
 
     def choose(kind: str):
         choice["kind"] = kind
-        root.destroy()
+        dialog.destroy()
 
-    button_row = tk.Frame(root)
+    button_row = tk.Frame(dialog)
     button_row.grid(row=1, column=0, columnspan=2, pady=(0, 12))
     tk.Button(button_row, text="Video or TIFF file", width=18, command=lambda: choose("file")).pack(side="left", padx=6)
     tk.Button(button_row, text="Image folder", width=18, command=lambda: choose("folder")).pack(side="left", padx=6)
-    root.bind("<Escape>", lambda _event: choose("cancel"))
-    root.mainloop()
+    dialog.bind("<Escape>", lambda _event: choose("cancel"))
+    dialog.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+    dialog.grab_set()
+    root.wait_window(dialog)
 
     kind = choice.get("kind")
     if kind == "folder":
@@ -283,8 +346,9 @@ def pick_save_folder(initial_path: str | None = None) -> str | None:
     """
 
     try:
-        import tkinter as tk
         from tkinter import filedialog
+
+        from .tk_host import get_tk_root
     except ImportError:
         print("", "Warning: tkinter unavailable, cannot open folder picker.", sep="\n", flush=True)
         return None
@@ -297,11 +361,10 @@ def pick_save_folder(initial_path: str | None = None) -> str | None:
         elif osp.isfile(initial_path):
             initialdir = osp.dirname(initial_path)
 
-    root = tk.Tk()
-    root.withdraw()
+    root = get_tk_root()
     root.attributes("-topmost", True)
-    selected_path = filedialog.askdirectory(title="Select results output folder", initialdir=initialdir)
-    root.destroy()
+    selected_path = filedialog.askdirectory(title="Select results output folder", initialdir=initialdir, parent=root)
+    root.attributes("-topmost", False)
 
     selected_path = clean_path_str(selected_path)
     if selected_path == "" or not osp.isdir(selected_path):
@@ -327,57 +390,76 @@ def ask_export_parameters(
     try:
         import tkinter as tk
         from tkinter import messagebox
+
+        from .tk_host import get_tk_root
     except ImportError:
         print("", "Warning: tkinter unavailable, using default export parameters.", sep="\n", flush=True)
         return float(default_fps), float(default_pixel_size_um)
 
     result: dict[str, float] = {}
+    root = get_tk_root()
+    dialog = tk.Toplevel(root)
+    dialog.title("Export Parameters")
+    dialog.attributes("-topmost", True)
+    dialog.resizable(False, False)
 
-    root = tk.Tk()
-    root.title("Export Parameters")
-    root.attributes("-topmost", True)
-    root.resizable(False, False)
-
-    tk.Label(root, text="Frame rate (FPS):").grid(row=0, column=0, padx=10, pady=(12, 4), sticky="w")
-    fps_var = tk.StringVar(value=f"{float(default_fps):g}")
-    fps_entry = tk.Entry(root, textvariable=fps_var, width=16)
+    tk.Label(dialog, text="Frame rate (FPS):").grid(row=0, column=0, padx=10, pady=(12, 4), sticky="w")
+    fps_var = tk.StringVar(master=dialog, value=f"{float(default_fps):g}")
+    fps_entry = tk.Entry(dialog, textvariable=fps_var, width=16)
     fps_entry.grid(row=0, column=1, padx=10, pady=(12, 4))
 
-    tk.Label(root, text="Pixel size (um/pixel):").grid(row=1, column=0, padx=10, pady=4, sticky="w")
-    pixel_var = tk.StringVar(value=f"{float(default_pixel_size_um):g}")
-    pixel_entry = tk.Entry(root, textvariable=pixel_var, width=16)
+    tk.Label(dialog, text="Pixel size (um/pixel):").grid(row=1, column=0, padx=10, pady=4, sticky="w")
+    pixel_var = tk.StringVar(master=dialog, value=f"{float(default_pixel_size_um):g}")
+    pixel_entry = tk.Entry(dialog, textvariable=pixel_var, width=16)
     pixel_entry.grid(row=1, column=1, padx=10, pady=4)
+
+    tk.Label(dialog, text="Max frame gap for velocity:").grid(row=2, column=0, padx=10, pady=4, sticky="w")
+    gap_var = tk.StringVar(master=dialog, value="1")
+    gap_entry = tk.Entry(dialog, textvariable=gap_var, width=16)
+    gap_entry.grid(row=2, column=1, padx=10, pady=4)
 
     def on_ok():
         try:
             fps_val = float(fps_var.get())
             pixel_val = float(pixel_var.get())
+            gap_val = int(float(gap_var.get()))
         except ValueError:
-            messagebox.showerror("Invalid Input", "Please enter numeric values for FPS and pixel size.")
+            messagebox.showerror(
+                "Invalid Input",
+                "Enter numeric values for FPS, pixel size, and frame gap.",
+                parent=dialog,
+            )
             return
-        if fps_val <= 0 or pixel_val <= 0:
-            messagebox.showerror("Invalid Input", "FPS and pixel size must be greater than 0.")
+        if fps_val <= 0 or pixel_val <= 0 or gap_val < 1:
+            messagebox.showerror(
+                "Invalid Input",
+                "FPS and pixel size must be greater than 0, and the frame gap must be at least 1.",
+                parent=dialog,
+            )
             return
         result["fps"] = fps_val
         result["pixel_size_um"] = pixel_val
-        root.destroy()
+        result["max_frame_gap"] = gap_val
+        dialog.destroy()
 
     def on_cancel():
-        root.destroy()
+        dialog.destroy()
 
-    button_row = tk.Frame(root)
-    button_row.grid(row=2, column=0, columnspan=2, pady=(8, 12))
+    button_row = tk.Frame(dialog)
+    button_row.grid(row=3, column=0, columnspan=2, pady=(8, 12))
     tk.Button(button_row, text="OK", width=10, command=on_ok).pack(side="left", padx=6)
     tk.Button(button_row, text="Cancel", width=10, command=on_cancel).pack(side="left", padx=6)
 
-    root.bind("<Return>", lambda _event: on_ok())
-    root.bind("<Escape>", lambda _event: on_cancel())
+    dialog.bind("<Return>", lambda _event: on_ok())
+    dialog.bind("<Escape>", lambda _event: on_cancel())
+    dialog.protocol("WM_DELETE_WINDOW", on_cancel)
     fps_entry.focus_set()
-    root.mainloop()
+    dialog.grab_set()
+    root.wait_window(dialog)
 
     if "fps" not in result:
         return None
-    return result["fps"], result["pixel_size_um"]
+    return result["fps"], result["pixel_size_um"], result["max_frame_gap"]
 
 
 # .....................................................................................................................
@@ -392,22 +474,22 @@ def show_message_dialog(title: str, message: str, kind: str = "error") -> None:
     """
 
     try:
-        import tkinter as tk
         from tkinter import messagebox
+
+        from .tk_host import get_tk_root
     except ImportError:
         print("", f"{title}: {message}", sep="\n", flush=True)
         return
 
-    root = tk.Tk()
-    root.withdraw()
+    root = get_tk_root()
     root.attributes("-topmost", True)
     if kind == "warning":
-        messagebox.showwarning(title, message)
+        messagebox.showwarning(title, message, parent=root)
     elif kind == "info":
-        messagebox.showinfo(title, message)
+        messagebox.showinfo(title, message, parent=root)
     else:
-        messagebox.showerror(title, message)
-    root.destroy()
+        messagebox.showerror(title, message, parent=root)
+    root.attributes("-topmost", False)
     return
 
 
@@ -421,18 +503,76 @@ def ask_save_unsaved_results() -> bool | None:
     """
 
     try:
-        import tkinter as tk
         from tkinter import messagebox
+
+        from .tk_host import get_tk_root
     except ImportError:
         print("", "Warning: tkinter unavailable, cannot show save confirmation dialog.", sep="\n", flush=True)
         return None
 
-    root = tk.Tk()
-    root.withdraw()
+    root = get_tk_root()
     root.attributes("-topmost", True)
     should_save = messagebox.askyesno(
         "Unsaved Results",
         "There are unsaved tracking results in memory.\n\nDo you want to save them before closing?",
+        parent=root,
     )
-    root.destroy()
+    root.attributes("-topmost", False)
     return should_save
+
+
+def ask_yes_no(title: str, message: str) -> bool | None:
+    """Return True for yes, False for no, or None when the dialog is unavailable or cancelled."""
+
+    try:
+        from tkinter import messagebox
+
+        from .tk_host import get_tk_root
+    except ImportError:
+        print("", f"{title}: {message}", sep="\n", flush=True)
+        return None
+
+    root = get_tk_root()
+    root.attributes("-topmost", True)
+    answer = messagebox.askyesno(title, message, parent=root)
+    root.attributes("-topmost", False)
+    return bool(answer)
+
+
+def parse_intensity_range(text: str) -> str | tuple[float, float]:
+    """Parse auto, full, or low,high for 16-bit stills."""
+
+    cleaned = str(text).strip().lower()
+    if cleaned in ("auto", "full"):
+        return cleaned
+    parts = [part.strip() for part in cleaned.split(",")]
+    if len(parts) != 2:
+        raise ValueError("intensity range must be auto, full, or low,high")
+    low, high = float(parts[0]), float(parts[1])
+    if high <= low:
+        raise ValueError("intensity range high must be greater than low")
+    return low, high
+
+
+def ask_save_discard_cancel(message: str) -> str | None:
+    """
+    Ask whether to save, discard, or cancel.
+
+    Returns "save", "discard", "cancel", or None when tkinter is unavailable.
+    """
+
+    try:
+        from tkinter import messagebox
+
+        from .tk_host import get_tk_root
+    except ImportError:
+        print("", "Warning: tkinter unavailable, cannot show save confirmation dialog.", sep="\n", flush=True)
+        return None
+
+    root = get_tk_root()
+    root.attributes("-topmost", True)
+    answer = messagebox.askyesnocancel("Unsaved Results", message, parent=root)
+    root.attributes("-topmost", False)
+    if answer is None:
+        return "cancel"
+    return "save" if answer else "discard"

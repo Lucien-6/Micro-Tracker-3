@@ -5,6 +5,7 @@
 # ---------------------------------------------------------------------------------------------------------------------
 # %% Imports
 
+import os
 import os.path as osp
 import csv
 import math
@@ -45,18 +46,22 @@ METRICS_HEADER = (
     "object_id",
     "frame_index",
     "time_s",
+    "frame_gap",
+    "dt_s",
     "centroid_x_px",
     "centroid_y_px",
     "centroid_x_um",
     "centroid_y_um",
     "area_px",
     "area_um2",
+    "num_components",
     "orientation_deg",
     "velocity_x_um_per_s",
     "velocity_y_um_per_s",
     "speed_um_per_s",
     "net_displacement_um",
     "net_sq_displacement_um2",
+    "qc_flag",
 )
 
 MSD_HEADER = (
@@ -103,12 +108,14 @@ def compute_object_stats(label_img: ndarray, object_id: int) -> dict | None:
     mu11 = moments["mu11"] / area_px
     orientation_rad = 0.5 * math.atan2(2.0 * mu11, (mu20 - mu02))
     orientation_deg = math.degrees(orientation_rad)
+    component_count, _labels = cv2.connectedComponents(mask, connectivity=8)
 
     return {
         "centroid_x": centroid_x,
         "centroid_y": centroid_y,
         "area_px": float(area_px),
         "orientation_deg": orientation_deg,
+        "num_components": int(component_count - 1),
     }
 
 
@@ -139,8 +146,15 @@ def build_metric_rows(
     per_object: dict[int, list[tuple[int, dict]]],
     pixel_size_um: float,
     fps: float,
+    max_frame_gap: int = 1,
 ) -> list[dict]:
-    """Build per-object, per-frame metric rows (velocity, displacement, orientation, ...)."""
+    """
+    Build per-object, per-frame metric rows (velocity, displacement, orientation, ...).
+
+    The first sample has no velocity. A gap longer than max_frame_gap also leaves
+    velocity blank, because dividing by that interval is not a frame-to-frame speed.
+    Orientation uses image coordinates: positive angles are clockwise because y increases downward.
+    """
 
     metric_rows = []
     for object_id in sorted(per_object.keys()):
@@ -158,16 +172,30 @@ def build_metric_rows(
             cx_um = stats["centroid_x"] * pixel_size_um
             cy_um = stats["centroid_y"] * pixel_size_um
 
-            velocity_x = velocity_y = speed = 0.0
+            frame_gap = ""
+            dt_s = ""
+            velocity_x = velocity_y = speed = ""
+            qc_flags = []
             if prev_entry is not None:
                 prev_frame_idx, prev_stats = prev_entry
-                dt = ((frame_idx - prev_frame_idx) / fps) if fps > 0 else 0.0
+                frame_gap = int(frame_idx - prev_frame_idx)
+                dt_s = (frame_gap / fps) if fps > 0 else 0.0
                 dx_um = (stats["centroid_x"] - prev_stats["centroid_x"]) * pixel_size_um
                 dy_um = (stats["centroid_y"] - prev_stats["centroid_y"]) * pixel_size_um
-                if dt > 0:
-                    velocity_x = dx_um / dt
-                    velocity_y = dy_um / dt
-                    speed = math.hypot(dx_um, dy_um) / dt
+                if frame_gap > 0 and frame_gap <= max_frame_gap and isinstance(dt_s, float) and dt_s > 0:
+                    velocity_x = dx_um / dt_s
+                    velocity_y = dy_um / dt_s
+                    speed = math.hypot(dx_um, dy_um) / dt_s
+                elif frame_gap > max_frame_gap:
+                    qc_flags.append("gap")
+                radius_px = math.sqrt(max(stats["area_px"], 1.0) / math.pi)
+                jump_px = math.hypot(stats["centroid_x"] - prev_stats["centroid_x"], stats["centroid_y"] - prev_stats["centroid_y"])
+                if jump_px > 3.0 * radius_px:
+                    qc_flags.append("jump")
+                if prev_stats["area_px"] > 0:
+                    area_ratio = stats["area_px"] / prev_stats["area_px"]
+                    if area_ratio < 0.5 or area_ratio > 2.0:
+                        qc_flags.append("area")
 
             net_dx = cx_um - start_x_um
             net_dy = cy_um - start_y_um
@@ -178,18 +206,22 @@ def build_metric_rows(
                     "object_id": object_id,
                     "frame_index": frame_idx,
                     "time_s": time_s,
+                    "frame_gap": frame_gap,
+                    "dt_s": dt_s,
                     "centroid_x_px": stats["centroid_x"],
                     "centroid_y_px": stats["centroid_y"],
                     "centroid_x_um": cx_um,
                     "centroid_y_um": cy_um,
                     "area_px": stats["area_px"],
                     "area_um2": stats["area_px"] * (pixel_size_um ** 2),
+                    "num_components": stats.get("num_components", 1),
                     "orientation_deg": stats["orientation_deg"],
                     "velocity_x_um_per_s": velocity_x,
                     "velocity_y_um_per_s": velocity_y,
                     "speed_um_per_s": speed,
                     "net_displacement_um": net_disp,
                     "net_sq_displacement_um2": net_disp * net_disp,
+                    "qc_flag": "|".join(qc_flags),
                 }
             )
             prev_entry = (frame_idx, stats)
@@ -221,18 +253,42 @@ def build_msd_rows(
         ys_um = np.array([stats["centroid_y"] for _, stats in sequence], dtype=np.float64) * pixel_size_um
 
         num_points = len(frame_indices)
-        max_lag = max(1, int((frame_indices[-1] - frame_indices[0]) // 2))
+        span = int(frame_indices[-1] - frame_indices[0])
+        max_lag = max(1, span // 2)
 
-        sq_sum_by_lag: dict[int, float] = defaultdict(float)
-        count_by_lag: dict[int, int] = defaultdict(int)
-        for i in range(num_points):
-            for j in range(i + 1, num_points):
-                lag = int(frame_indices[j] - frame_indices[i])
-                if lag > max_lag:
-                    break
-                sq_disp = (xs_um[j] - xs_um[i]) ** 2 + (ys_um[j] - ys_um[i]) ** 2
-                sq_sum_by_lag[lag] += float(sq_disp)
-                count_by_lag[lag] += 1
+        sq_sum_by_lag: dict[int, float] = {}
+        count_by_lag: dict[int, int] = {}
+        # Dense lag slices match the pair loop when each frame index appears once.
+        # A very long gap falls back to that loop so the temporary arrays stay bounded.
+        if num_points >= 2 and 0 < span <= 2_000_000:
+            origin = int(frame_indices[0])
+            xs_dense = np.full(span + 1, np.nan, dtype=np.float64)
+            ys_dense = np.full(span + 1, np.nan, dtype=np.float64)
+            offsets = frame_indices - origin
+            xs_dense[offsets] = xs_um
+            ys_dense[offsets] = ys_um
+            for lag in range(1, max_lag + 1):
+                dx = xs_dense[lag:] - xs_dense[:-lag]
+                dy = ys_dense[lag:] - ys_dense[:-lag]
+                valid = np.isfinite(dx)
+                count = int(np.count_nonzero(valid))
+                if count == 0:
+                    continue
+                dx_valid = dx[valid]
+                dy_valid = dy[valid]
+                sq_sum_by_lag[lag] = float(np.dot(dx_valid, dx_valid) + np.dot(dy_valid, dy_valid))
+                count_by_lag[lag] = count
+        else:
+            for i in range(num_points):
+                for j in range(i + 1, num_points):
+                    lag = int(frame_indices[j] - frame_indices[i])
+                    if lag > max_lag or lag <= 0:
+                        if lag > max_lag:
+                            break
+                        continue
+                    sq_disp = (xs_um[j] - xs_um[i]) ** 2 + (ys_um[j] - ys_um[i]) ** 2
+                    sq_sum_by_lag[lag] = sq_sum_by_lag.get(lag, 0.0) + float(sq_disp)
+                    count_by_lag[lag] = count_by_lag.get(lag, 0) + 1
 
         for lag in sorted(sq_sum_by_lag.keys()):
             num_pairs = count_by_lag[lag]
@@ -300,25 +356,25 @@ def _create_video_writer(out_path: str, fps: float, frame_wh: tuple[int, int]):
 def render_tracking_overlay_video(
     out_path: str,
     frames_dict: dict[int, ndarray],
-    video_path: str,
+    read_frame,
     fps: float,
     trail_length: int = 20,
     contour_thickness: int = 2,
     trail_thickness: int = 2,
     progress_cb=None,
-) -> tuple[str, int] | None:
+) -> tuple[str, int, int] | None:
     """
     Render a single overlay video showing every tracked object with a uniquely
     colored contour plus a fading trajectory (the most recent 'trail_length'
-    recorded positions). Original frames are read back from the source video at
-    the recorded frame indices.
+    recorded positions).     Original frames come from read_frame(frame_index), which supports video files,
+    TIFF stacks, and image folders.
 
     A trajectory is only drawn while its object is present in the current frame;
     once the object leaves the field of view, its trail is no longer shown.
 
     'progress_cb', if given, is called as progress_cb(stage, current, total).
 
-    Returns (output_path, num_frames_written) or None if nothing was written.
+    Returns (output_path, num_frames_written, missed_source_frames) or None if nothing was written.
     """
 
     sorted_frames = sorted(frames_dict.keys())
@@ -329,31 +385,27 @@ def render_tracking_overlay_video(
 
     # Pre-compute per-object centroid history (ordered by frame)
     per_object = build_object_trajectories(frames_dict)
-    centroid_history: dict[int, list[tuple[int, tuple[float, float]]]] = {}
+    trail_index: dict[int, np.ndarray] = {}
+    trail_xy: dict[int, np.ndarray] = {}
     for object_id, sequence in per_object.items():
-        centroid_history[object_id] = [
-            (frame_idx, (stats["centroid_x"], stats["centroid_y"])) for frame_idx, stats in sequence
-        ]
+        trail_index[object_id] = np.asarray([frame_idx for frame_idx, _stats in sequence], dtype=np.int64)
+        trail_xy[object_id] = np.asarray(
+            [(stats["centroid_x"], stats["centroid_y"]) for _frame_idx, stats in sequence],
+            dtype=np.float64,
+        ).reshape(-1, 2)
 
-    vcap = _open_video_capture(video_path)
     writer, actual_out_path = _create_video_writer(out_path, fps, (frame_w, frame_h))
     if not writer.isOpened():
-        vcap.release()
         raise IOError(f"Could not open a video writer for: {out_path}")
 
     num_written = 0
-    decoder_pos = -1
+    missed_frames = 0
     total_frames = len(sorted_frames)
     try:
         for frame_idx in sorted_frames:
-            # Read original frame (seek only when not already positioned)
-            if frame_idx != decoder_pos:
-                vcap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                decoder_pos = frame_idx
-            read_ok, frame = vcap.read()
-            decoder_pos = (decoder_pos + 1) if read_ok else -1
-
-            if not read_ok or frame is None:
+            frame = read_frame(int(frame_idx))
+            if frame is None:
+                missed_frames += 1
                 frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
             elif frame.shape[0:2] != (frame_h, frame_w):
                 frame = cv2.resize(frame, (frame_w, frame_h))
@@ -374,11 +426,13 @@ def render_tracking_overlay_video(
             trail_layer = np.zeros_like(frame)
             alpha_canvas = np.zeros((frame_h, frame_w), dtype=np.float32)
             has_trail = False
-            for object_id, history in centroid_history.items():
+            for object_id, idx_arr in trail_index.items():
                 if object_id not in present_ids:
                     continue
                 color = OVERLAY_COLORS[(object_id - 1) % len(OVERLAY_COLORS)]
-                points = [xy for hist_idx, xy in history if hist_idx <= frame_idx][-trail_length:]
+                end = int(np.searchsorted(idx_arr, int(frame_idx), side="right"))
+                start = max(0, end - trail_length)
+                points = trail_xy[object_id][start:end]
                 num_pts = len(points)
                 if num_pts < 2:
                     continue
@@ -402,9 +456,8 @@ def render_tracking_overlay_video(
 
     finally:
         writer.release()
-        vcap.release()
 
-    return actual_out_path, num_written
+    return actual_out_path, num_written, missed_frames
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -419,6 +472,8 @@ def export_tracking_analysis(
     pixel_size_um: float,
     trail_length: int = 20,
     progress_cb=None,
+    max_frame_gap: int = 1,
+    intensity_range: str | tuple[float, float] = "auto",
 ) -> dict:
     """
     Write the metric CSV, MSD CSV and overlay video into 'save_folder'.
@@ -428,12 +483,13 @@ def export_tracking_analysis(
     Returns a summary dict describing what was written.
     """
 
+    os.makedirs(save_folder, exist_ok=True)
     if progress_cb is not None:
         progress_cb("Computing metrics", 0, 1)
 
     per_object = build_object_trajectories(frames_dict)
 
-    metric_rows = build_metric_rows(per_object, pixel_size_um, fps)
+    metric_rows = build_metric_rows(per_object, pixel_size_um, fps, max_frame_gap=max_frame_gap)
     msd_rows = build_msd_rows(per_object, pixel_size_um, fps)
 
     metrics_path = osp.join(save_folder, "tracking_metrics.csv")
@@ -445,10 +501,16 @@ def export_tracking_analysis(
 
     overlay_result = None
     if video_path is not None:
+        from .image_sequence import open_frame_source
+
         overlay_path = osp.join(save_folder, "tracking_overlay.mp4")
-        overlay_result = render_tracking_overlay_video(
-            overlay_path, frames_dict, video_path, fps, trail_length=trail_length, progress_cb=progress_cb
-        )
+        reader = open_frame_source(video_path, intensity_range=intensity_range)
+        try:
+            overlay_result = render_tracking_overlay_video(
+                overlay_path, frames_dict, reader.read_frame, fps, trail_length=trail_length, progress_cb=progress_cb
+            )
+        finally:
+            reader.release()
 
     return {
         "num_objects": len(per_object),
@@ -457,4 +519,5 @@ def export_tracking_analysis(
         "msd_path": msd_path,
         "overlay_path": overlay_result[0] if overlay_result is not None else None,
         "overlay_frames": overlay_result[1] if overlay_result is not None else 0,
+        "overlay_missed_frames": overlay_result[2] if overlay_result is not None else 0,
     }

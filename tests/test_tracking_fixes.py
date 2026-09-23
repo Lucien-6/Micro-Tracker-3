@@ -327,7 +327,7 @@ def test_close_request_stays_open_when_save_is_cancelled(monkeypatch):
         def __init__(self):
             self.results_buffer = buffer
 
-    monkeypatch.setattr(app, "ask_save_unsaved_results", lambda: True)
+    monkeypatch.setattr(app, "ask_save_discard_cancel", lambda *_args, **_kwargs: "save")
     monkeypatch.setattr(app, "prompt_and_save_tracking_results", lambda *_args, **_kwargs: False)
 
     class Window:

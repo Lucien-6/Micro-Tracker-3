@@ -1,7 +1,8 @@
-# Micro Tracker 3 v1.6.0 (2026-09-22)
+# Micro Tracker 3 v1.8.1 (2026-09-23)
 # Install PyTorch first from https://pytorch.org/get-started/locally/
 # tkinter is required for the in-app user guide (H) and file dialogs (stdlib on Windows)
 
 opencv-python   >=4.5, <4.14
 numpy           >=1.21, <2.5
 torch           >=2.1, <2.12
+tifffile        >=2024.1
