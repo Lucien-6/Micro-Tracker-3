@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.8.1"
+__version__ = "1.8.2"
 __app_name__ = "Micro Tracker 3"
 __author__ = "Lucien"
 __author_email__ = "lucien-6@qq.com"
@@ -81,7 +81,13 @@ from src.demo_helpers.misc import (
 )
 from src.demo_helpers.sparse_labels import TrackingResultsBuffer
 from src.demo_helpers.analysis import export_tracking_analysis
-from src.demo_helpers.session import read_session, session_from_manager, write_session
+from src.demo_helpers.session import (
+    read_session,
+    session_from_manager,
+    session_object_ids,
+    session_video_mismatch,
+    write_session,
+)
 from src.demo_helpers.tracking_policy import model_family_name, select_mask_index
 from src.demo_helpers.ui.progress import ProgressWindow
 from src.demo_helpers.tk_host import close_tk_root
@@ -860,6 +866,8 @@ def prompt_and_save_tracking_results(
                 "video_path": video_path,
                 "fps": float(fps_value),
                 "pixel_size_um": float(pixel_size_um),
+                "max_frame_gap": int(max_frame_gap),
+                "intensity_range": intensity_range,
             }
             show_message_dialog(
                 "Export Warning",
@@ -893,7 +901,7 @@ def prompt_and_save_tracking_results(
     return True
 
 
-def retry_pending_metrics(obj_mgr, toast=None) -> bool:
+def retry_pending_metrics(obj_mgr, toast=None, window=None) -> bool:
     """Write metrics and the overlay video for a folder whose label images already exist."""
 
     pending = obj_mgr.pending_analysis
@@ -902,15 +910,35 @@ def retry_pending_metrics(obj_mgr, toast=None) -> bool:
             toast.notify("No unfinished metrics export", level="warning")
         return False
 
+    progress = ProgressWindow("Retry Metrics")
+
+    def report_progress(stage, current, total):
+        total = max(int(total), 1)
+        frac_local = current / total
+        if stage == "Computing metrics":
+            overall, msg = 0.1 * frac_local, "Computing metrics..."
+        elif stage == "Rendering overlay video":
+            overall, msg = 0.1 + 0.9 * frac_local, f"Rendering overlay video ({current}/{total})"
+        else:
+            overall, msg = frac_local, str(stage)
+        progress.update(msg, overall)
+
     try:
         frames = load_saved_label_frames(pending["folder"])
-        export_tracking_analysis(
+        summary = export_tracking_analysis(
             pending["folder"],
             frames,
             pending["video_path"],
             pending["fps"],
             pending["pixel_size_um"],
+            progress_cb=report_progress,
+            max_frame_gap=int(pending.get("max_frame_gap", 1)),
+            intensity_range=pending.get("intensity_range", "auto"),
         )
+        missed = int((summary or {}).get("overlay_missed_frames") or 0)
+        if missed and toast is not None:
+            toast.notify(f"Overlay missed {missed} source frame(s)", level="warning", duration_sec=4.0)
+        progress.update("Done", 1.0, force=True)
     except Exception as err:
         show_message_dialog(
             "Export Warning",
@@ -918,6 +946,10 @@ def retry_pending_metrics(obj_mgr, toast=None) -> bool:
             kind="warning",
         )
         return False
+    finally:
+        progress.close()
+        if window is not None:
+            window.refocus()
 
     saved_keys = set(frames.keys())
     live_keys = set(obj_mgr.results_buffer.frames_dict.keys())
@@ -1195,6 +1227,29 @@ class ObjectSlotManager:
         self._rebuild_ui(0)
         if clear_prompts:
             self.ui_elems.clear_prompts()
+        return self
+
+    def reset_to_stable_ids(self, stable_ids: list[int], init_mask_preds, init_mask_idx):
+        """Replace every slot with the given label ids, in that order."""
+
+        if len(stable_ids) == 0 or len(stable_ids) > self.MAX_OBJECTS:
+            raise ValueError(f"Session needs between 1 and {self.MAX_OBJECTS} objects.")
+        self.init_mask_preds = init_mask_preds
+        self.init_mask_idx = init_mask_idx
+        self.maskresults_list.clear()
+        self.memory_list.clear()
+        self.stable_ids.clear()
+        self.results_buffer.clear()
+        self.last_record_signature = None
+        self._clear_mask_cache()
+        for stable_id in stable_ids:
+            self.stable_ids.append(int(stable_id))
+            self.maskresults_list.append(MaskResults.create(self.init_mask_preds, self.init_mask_idx))
+            self.memory_list.append(
+                SAMVideoMemoryBank(self.max_memory_history, max_prompt_memory=self.max_prompt_memory)
+            )
+        self._rebuild_ui(0)
+        self.ui_elems.clear_prompts()
         return self
 
 
@@ -1728,6 +1783,7 @@ def main():
             raise ValueError("Session file has no prompts.")
         if len(objects) > obj_mgr.MAX_OBJECTS:
             raise ValueError(f"Session has {len(objects)} objects; the limit is {obj_mgr.MAX_OBJECTS}.")
+        object_ids = session_object_ids(objects)
 
         runtime_changed = False
         saved_model = clean_path_str(session.get("model_path"))
@@ -1773,10 +1829,7 @@ def main():
             )
 
         vreader.pause(True)
-        obj_mgr.reset_to_single_object(init_mask_preds, init_mask_idx, clear_prompts=True)
-        while len(obj_mgr.maskresults_list) < len(objects):
-            if not obj_mgr.add_object(select_new=False, clear_prompts=False):
-                raise ValueError("Could not create enough object slots for the session.")
+        obj_mgr.reset_to_stable_ids(object_ids, init_mask_preds, init_mask_idx)
         for objidx, obj in enumerate(objects):
             for prompt in obj.get("prompts") or []:
                 frame_index = int(prompt["frame_index"])
@@ -2544,7 +2597,7 @@ def main():
                         toast.notify("No tracking results in memory to save", level="warning")
 
                 if retry_metrics_btn.read():
-                    retry_pending_metrics(obj_mgr, toast)
+                    retry_pending_metrics(obj_mgr, toast, window)
 
                 # Wipe out all buffered result data if needed
                 if buffer_clear_btn.read():
@@ -2559,6 +2612,7 @@ def main():
                         model_path=model_path,
                         encode_side=imgenc_config_dict["max_side_length"],
                         use_square_sizing=imgenc_config_dict["use_square_sizing"],
+                        video_path=video_path,
                     )
                     if len(session["objects"]) == 0:
                         toast.notify("No stored prompts to save", level="warning")
@@ -2586,7 +2640,36 @@ def main():
                         window.refocus()
                         if session_path:
                             try:
-                                _restore_prompt_session(read_session(session_path))
+                                session = read_session(session_path)
+                                mismatch = session_video_mismatch(session, video_path)
+                                if mismatch:
+                                    show_message_dialog("Session Load Failed", mismatch, kind="error")
+                                    window.refocus()
+                                    continue
+                                if not confirm_before_discarding_results(
+                                    "load a session",
+                                    obj_mgr,
+                                    video_path,
+                                    window,
+                                    history,
+                                    toast,
+                                    video_fps,
+                                    getattr(vreader, "source_info", None) if vreader is not None else None,
+                                    intensity_range,
+                                ):
+                                    continue
+                                has_prompts = any(
+                                    memory.check_has_prompts() for memory in obj_mgr.memory_list
+                                )
+                                if has_prompts:
+                                    replace_prompts = ask_yes_no(
+                                        "Load Session",
+                                        "Replace the current stored prompts with this session?",
+                                    )
+                                    window.refocus()
+                                    if replace_prompts is not True:
+                                        continue
+                                _restore_prompt_session(session)
                                 square_label = "square" if imgenc_config_dict["use_square_sizing"] else "aspect"
                                 toast.notify(
                                     f"Session loaded ({model_name}, side {imgenc_config_dict['max_side_length']}, {square_label})",

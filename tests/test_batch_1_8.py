@@ -8,7 +8,13 @@ import numpy as np
 
 from src.demo_helpers.analysis import build_msd_rows
 from src.demo_helpers.misc import encode_side_warning, native_encode_side, resolve_encode_side
-from src.demo_helpers.session import read_session, session_from_manager, write_session
+from src.demo_helpers.session import (
+    read_session,
+    session_from_manager,
+    session_object_ids,
+    session_video_mismatch,
+    write_session,
+)
 from src.demo_helpers.sparse_labels import TrackingResultsBuffer, compress_label, decompress_label
 from src.demo_helpers.ui.helpers.images import get_image_hw_for_max_side_length
 
@@ -100,12 +106,19 @@ def test_session_records_model_and_encode_settings(tmp_path):
         model_path="model_weights/sam3.pt",
         encode_side=1008,
         use_square_sizing=False,
+        video_path="clips/sample.avi",
     )
     assert session["version"] == 2
     assert session["model_path"] == "model_weights/sam3.pt"
     assert session["encode_side"] == 1008
     assert session["use_square_sizing"] is False
+    assert session["video_path"].endswith("sample.avi")
     assert session["objects"][0]["stable_id"] == 2
+    assert session_object_ids(session["objects"]) == [2]
+    assert session_object_ids([{"stable_id": 7}, {}]) == [7, 1]
+    assert session_video_mismatch({"video_path": session["video_path"]}, session["video_path"]) is None
+    assert session_video_mismatch({"video_path": session["video_path"]}, "other.avi") is not None
+    assert session_video_mismatch({}, "other.avi") is None
     path = tmp_path / "session.json"
     write_session(str(path), session)
     loaded = read_session(str(path))

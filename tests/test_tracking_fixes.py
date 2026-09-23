@@ -228,6 +228,10 @@ def test_remove_object_keeps_surviving_label_ids():
     assert manager.stable_ids[1] == 3
     assert 2 in manager.stable_ids
 
+    manager.reset_to_stable_ids([7, 2], init, 0)
+    assert manager.stable_ids == [7, 2]
+    assert len(manager.memory_list) == 2
+
 
 def test_failed_metric_export_keeps_the_buffer_and_retry_writes_metrics(monkeypatch):
     import main as app
@@ -266,14 +270,16 @@ def test_failed_metric_export_keeps_the_buffer_and_retry_writes_metrics(monkeypa
 
     monkeypatch.setattr(app, "ProgressWindow", Progress)
     monkeypatch.setattr(app, "pick_save_folder", lambda _path: tempfile.mkdtemp())
-    monkeypatch.setattr(app, "ask_export_parameters", lambda **_kwargs: (10.0, 1.0))
+    monkeypatch.setattr(app, "ask_export_parameters", lambda **_kwargs: (10.0, 1.5, 4))
     monkeypatch.setattr(app, "show_message_dialog", lambda *_args, **_kwargs: None)
     def fail_export(*_args, **_kwargs):
         raise RuntimeError("metrics failed")
 
     monkeypatch.setattr(app, "export_tracking_analysis", fail_export)
 
-    saved = app.prompt_and_save_tracking_results(obj, "clip.mp4", Window(), history=None, toast=Toast(), video_fps=10)
+    saved = app.prompt_and_save_tracking_results(
+        obj, "clip.mp4", Window(), history=None, toast=Toast(), video_fps=10, intensity_range=(100, 4000)
+    )
     assert saved is False
     assert buffer.has_data()
     assert obj.pending_analysis is not None
@@ -284,15 +290,19 @@ def test_failed_metric_export_keeps_the_buffer_and_retry_writes_metrics(monkeypa
 
     written = {}
 
-    def succeed_export(save_folder, frames_dict, *_args, **_kwargs):
+    def succeed_export(save_folder, frames_dict, *_args, **kwargs):
         written["folder"] = save_folder
         written["keys"] = set(frames_dict)
+        written["gap"] = kwargs.get("max_frame_gap")
+        written["intensity"] = kwargs.get("intensity_range")
         return {}
 
     monkeypatch.setattr(app, "export_tracking_analysis", succeed_export)
     assert app.retry_pending_metrics(obj, Toast())
     assert written["keys"] == {3, 8}
     assert written["folder"] == folder
+    assert written["gap"] == 4
+    assert written["intensity"] == (100, 4000)
     assert obj.pending_analysis is None
     assert not buffer.has_data()
 

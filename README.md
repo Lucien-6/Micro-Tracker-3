@@ -6,7 +6,7 @@ Micro Tracker 3 is a desktop application for annotating targets in video frames 
 
 Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_sam](https://github.com/heyoeyo/muggled_sam); SAM 2 / SAM 3 / SAM 3.1, pure PyTorch), Micro Tracker 3 wraps model loading, an OpenCV-based GUI, multi-object memory management, and TIF export into a single interactive tool.
 
-**Current version:** [1.8.1](CHANGELOG.md) (2026-09-23) · **Author:** Lucien · **License:** [MIT](LICENSE) for this application; Apache-2.0 for the vendored SAM code ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+**Current version:** [1.8.2](CHANGELOG.md) (2026-09-23) · **Author:** Lucien · **License:** [MIT](LICENSE) for this application; Apache-2.0 for the vendored SAM code ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) · **User guide:** press **H** in-app, or [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 
@@ -20,10 +20,10 @@ Built on a bundled SAM inference stack in [`src/`](src/) (derived from [muggled_
 | **Lost-target policy** | Per-object stop on low object score (default); optional continued inference via `--keep_bad_objscores` |
 | **Multi-object** | Up to 255 slots with stable label ids; scrollable two-column list (mouse wheel) when more than 32 |
 | **Playback** | Pause, play, reverse, frame stepping, and timeline scrubbing; CPU encode cache + reverse frame buffer for fast scrubbing/stepping |
-| **Export** | Frame-index label TIFFs (`00240.tif`), `frame_index.csv`, metrics CSV, MSD CSV, and an overlay video; **Retry Metrics** finishes a failed analysis export |
+| **Export** | Frame-index label TIFFs (`00240.tif`), `frame_index.csv`, metrics CSV, MSD CSV, and an overlay video; **Retry Metrics** repeats a failed analysis with the same frame gap and intensity range |
 | **Analysis** | Per-frame centroid, area, orientation (fitted-ellipse long axis), velocity, displacement, and MSD |
 | **Feedback** | On-screen **toast** messages centered in the video; modal dialogs for errors; live **save progress** window |
-| **Editing** | **Ctrl+Z** undo for the last prompt; **Save / Load Session** keeps prompts with the model path, encode side, and square setting; `.history` restores display options |
+| **Editing** | **Ctrl+Z** undo for the last prompt; **Save / Load Session** keeps prompts, object ids, model path, encode side, square setting, and video path; `.history` restores display options |
 | **Models** | Auto-detects SAM 2, SAM 3, or SAM 3.1 weights (`.pt` / `.pth`) |
 | **Hardware** | CUDA, Apple MPS, or CPU. GPU default is bfloat16. CPU stays float32 |
 | **Help** | **H** — tkinter user guide (English / 中文); **F1** — keyboard shortcuts panel |
@@ -148,7 +148,7 @@ On first run, the app resolves the model from (in order):
 6. **Track** — Press **Track** or Space to play forward; masks propagate automatically each frame. If a target is lost (low object score), tracking for that object stops by default until you move to an earlier frame or store new prompts.
 7. **Record** — Enable **Enable Recording** to buffer label frames in memory.
 8. **Export** — Click **Save Results**, confirm **frame rate** and **pixel size (µm/pixel)** in the export dialog, then the app writes the TIF label sequence plus the metrics CSV, MSD CSV, and overlay video. A progress window shows live status.
-9. **Save Session** — Stores the prompts together with the model file, encode side, and square setting. **Load Session** applies those settings and rebuilds the masks on the open video.
+9. **Save Session** — Stores the prompts, object ids, model file, encode side, square setting, and video path. **Load Session** rebuilds the masks on that same video after asking before it replaces unsaved recordings or stored prompts. A different open video is refused.
 
 Repeat steps 3–5 for additional objects before tracking.
 
@@ -255,7 +255,7 @@ The label sequence is compatible with common downstream tools (ImageJ, TrackMate
 micro-tracker-3/
 ├── main.py                   # Application entry point
 ├── requirements.txt
-├── VERSION                   # Current release (1.8.1)
+├── VERSION                   # Current release (1.8.2)
 ├── CHANGELOG.md
 ├── docs/
 │   └── USER_GUIDE.md         # Markdown user guide (same topics as H-key window)

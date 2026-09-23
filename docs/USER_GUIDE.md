@@ -1,6 +1,6 @@
 # Micro Tracker 3 — User Guide
 
-**Version:** 1.8.1  
+**Version:** 1.8.2  
 **Last updated:** 2026-09-23  
 **Author:** Lucien · [lucien-6@qq.com](mailto:lucien-6@qq.com)
 
@@ -224,7 +224,7 @@ Only frames visited while recording are saved. Lost objects contribute **backgro
 
 Physical units (µm, µm/s, µm²) depend on the fps and µm/pixel values you enter; centroid is also reported in pixels. The first sample of each object has no velocity. A frame gap larger than the export dialog's max gap also leaves velocity blank. Orientation is measured in image coordinates, so a positive angle is clockwise because y increases downward.
 
-16-bit TIFF stacks and image folders are scaled with one intensity mapping for the whole sequence (`--intensity_range auto` by default). Save Session stores the raw prompts plus the model path, encode side, and square setting. Load Session applies those settings, then re-encodes the prompts. Older session files that omit them keep the current model and encode settings. Shift+`-` removes an object that already has prompts or labels, after a confirmation.
+16-bit TIFF stacks and image folders are scaled with one intensity mapping for the whole sequence (`--intensity_range auto` by default). Save Session stores the raw prompts plus the model path, encode side, square setting, and video path. Load Session keeps the saved object ids, applies those encode settings, then re-encodes the prompts on that same video. A different open video is refused. Unsaved recordings are offered save, discard, or cancel first; stored prompts are replaced only after confirmation. Older session files that omit the new fields keep the current video, model, and encode settings. Retry Metrics repeats the failed analysis with the same frame-gap limit and intensity range. Shift+`-` removes an object that already has prompts or labels, after a confirmation.
 
 ---
 

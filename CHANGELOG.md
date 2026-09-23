@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-09-23
+
+### Changed
+
+- Save Session stores the video path. Load Session keeps the saved object ids, refuses a different open video, and asks before replacing stored prompts. Unsaved recordings are offered save, discard, or cancel first. Older session files that omit the video path still load on the video that is already open.
+- Retry Metrics uses the frame-gap limit and 16-bit intensity range from the export that failed, and shows a progress window.
+
 ## [1.8.1] - 2026-09-23
 
 ### Fixed
@@ -224,6 +231,7 @@ First stable release of **Micro Tracker 3**.
 - Model weights are **not** bundled; place `.pt` / `.pth` files in `model_weights/`
 - Inference backend: PyTorch with CUDA, Apple MPS, or CPU
 
+[1.8.2]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.8.2
 [1.8.1]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.8.1
 [1.8.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.8.0
 [1.7.0]: https://github.com/Lucien-6/Micro-Tracker-3/releases/tag/v1.7.0
